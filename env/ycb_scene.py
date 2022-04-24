@@ -303,7 +303,6 @@ class SimulatedYCBEnv():
         self.init_target_height = self._get_target_relative_pose()[2, 3]
 
         observation = self.enforce_face_target() if enforce_face_target else self._get_observation()
-        observation = self.input_selection(observation)
         return observation
 
     def place_back_objects(self):
