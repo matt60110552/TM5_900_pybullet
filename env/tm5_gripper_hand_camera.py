@@ -15,10 +15,10 @@ class TM5:
         self.realtime = realtime
         self.control_mode = "position"
 
-        self.position_control_gain_p = [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01]
-        self.position_control_gain_d = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+        self.position_control_gain_p = [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01]
+        self.position_control_gain_d = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
         f_max = 250
-        self.max_torque = [f_max, f_max, f_max, f_max, f_max, f_max, 100, 100]
+        self.max_torque = [f_max, f_max, f_max, f_max, f_max, f_max, 100, 100, 100]
 
         # connect pybullet
         p.setRealTimeSimulation(self.realtime)
@@ -66,8 +66,8 @@ class TM5:
                                    childFramePosition=[0, 0, 0])
             p.changeConstraint(c, gearRatio=-multiplier, maxForce=100, erp=1)
 
-        p.setCollisionFilterPair(self.robot, self.robot, 10, 12, 0)
-        p.setCollisionFilterPair(self.robot, self.robot, 15, 17, 0)
+        p.setCollisionFilterPair(self.robot, self.robot, 11, 13, 0)
+        p.setCollisionFilterPair(self.robot, self.robot, 16, 18, 0)
 
         self.joints = []
         self.q_min = []
@@ -75,13 +75,13 @@ class TM5:
         self.target_pos = []
         self.target_torque = []
         self.pandaEndEffectorIndex = 7
-        self._joint_min_limit = np.array([-4.712385, -3.14159, -2.70526, -3.14159, -3.14159, -4.712385, 0, 0])
-        self._joint_max_limit = np.array([4.712385, 3.14159, 2.70526,  3.14159,  3.14159,  4.712385, 0, 0.8])
+        self._joint_min_limit = np.array([-4.712385, -3.14159, -2.70526, -3.14159, -3.14159, -4.712385, 0, 0, 0])
+        self._joint_max_limit = np.array([4.712385, 3.14159, 2.70526,  3.14159,  3.14159,  4.712385, 0, 0, 0.8])
 
         for j in range(self.dof):
             p.changeDynamics(self.robot, j, linearDamping=0, angularDamping=0)
             joint_info = p.getJointInfo(self.robot, j)
-            if j in range(1, 9):
+            if j in range(1, 10):
                 self.joints.append(j)
                 self.q_min.append(joint_info[8])
                 self.q_max.append(joint_info[9])
@@ -96,16 +96,16 @@ class TM5:
                                           [0.000000, 0.000000, 0.000000, 1.000000])
         if joints is None:
             self.target_pos = [
-                    0.2, -1, 2, 0, 1.571, 0.0, 0.0, 0.0]
+                    0.2, -1, 2, 0, 1.571, 0.0, 0.0, 0.0, 0.0]
 
             self.target_pos = self.standardize(self.target_pos)
-            for j in range(1, 9):
+            for j in range(1, 10):
                 self.target_torque[j-1] = 0.
                 p.resetJointState(self.robot, j, targetValue=self.target_pos[j-1])
 
         else:
             joints = self.standardize(joints)
-            for j in range(1, 9):
+            for j in range(1, 10):
                 self.target_pos[j-1] = joints[j-1]
                 self.target_torque[j-1] = 0.
                 p.resetJointState(self.robot, j, targetValue=self.target_pos[j-1])
@@ -120,14 +120,14 @@ class TM5:
         p.setJointMotorControlArray(bodyUniqueId=self.robot,
                                     jointIndices=self.joints,
                                     controlMode=p.VELOCITY_CONTROL,
-                                    forces=[0. for i in range(1, 9)])
+                                    forces=[0. for i in range(1, 10)])
 
     def standardize(self, target_pos):
         if len(target_pos) == 7:
             if type(target_pos) == list:
-                target_pos.insert(6, 0)
+                target_pos[6:6] = [0, 0]
             else:
-                target_pos = np.insert(target_pos, 6, 0)
+                target_pos = np.insert(target_pos, 6, [0, 0])
 
         target_pos = np.array(target_pos)
 
@@ -150,8 +150,8 @@ class TM5:
         joint_pos = [x[0] for x in joint_states]
         joint_vel = [x[1] for x in joint_states]
 
-        del joint_pos[6]
-        del joint_vel[6]
+        del joint_pos[6:8]
+        del joint_vel[6:8]
 
         return joint_pos, joint_vel
 

@@ -355,7 +355,7 @@ class SimulatedYCBEnv():
         Get hand camera view
         """
         if cam_pose is None:
-            pos, orn = p.getLinkState(self._panda.pandaUid, 18)[4:6]
+            pos, orn = p.getLinkState(self._panda.pandaUid, 19)[4:6]
             cam_pose = list(pos) + [orn[3], orn[0], orn[1], orn[2]]
         cam_pose_mat = unpack_pose(cam_pose)
 

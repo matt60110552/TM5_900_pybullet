@@ -200,9 +200,16 @@
     <origin rpy="1.570795 0 0" xyz="0 0 0"/>
     <!-- Note: 0.5 * pi -->
   </joint>
+  <joint name="flange_fixed_joint" type="fixed">
+    <parent link="wrist_3_link"/>
+    <child link="flange_link"/>
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+  </joint>
+  <link name="flange_link">
+  </link>
   <!-- gripper     -->
   <joint name="gripper_hand_joint" type="fixed">
-    <parent link="wrist_3_link"/>
+    <parent link="flange_link"/>
     <child link="robotiq_arg2f_base_link"/>
     <origin rpy="0 0 1.570795" xyz="0 0 0"/>
   </joint>
