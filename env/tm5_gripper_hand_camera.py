@@ -6,6 +6,7 @@ import pybullet as p
 import numpy as np
 import IPython
 import os
+import math
 
 
 class TM5:
@@ -77,6 +78,7 @@ class TM5:
         self.pandaEndEffectorIndex = 7
         self._joint_min_limit = np.array([-4.712385, -3.14159, -2.70526, -3.14159, -3.14159, -4.712385, 0, 0, 0])
         self._joint_max_limit = np.array([4.712385, 3.14159, 2.70526,  3.14159,  3.14159,  4.712385, 0, 0, 0.8])
+        self.gripper_range = [0, 0.085]
 
         for j in range(self.dof):
             p.changeDynamics(self.robot, j, linearDamping=0, angularDamping=0)
@@ -160,6 +162,13 @@ class TM5:
                     7, pos, ori,
                     maxNumIterations=500,
                     residualThreshold=1e-8))
+
+    def move_gripper(self, open_length):
+        open_length = np.clip(open_length, *self.gripper_range)
+        open_angle = 0.715 - math.asin((open_length - 0.010) / 0.1143)  # angle calculation
+        # Control the mimic gripper joint(s)
+        p.setJointMotorControl2(self.robot, self.mimic_parent_id, p.POSITION_CONTROL, targetPosition=open_angle,
+                                force=100)
 
 
 if __name__ == "__main__":

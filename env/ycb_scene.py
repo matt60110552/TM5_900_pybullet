@@ -246,6 +246,41 @@ class SimulatedYCBEnv():
         pose_info = (object_pose, ef_pose)
         return [obs, joint_pos, camera_info, pose_info]
 
+    def retract(self):
+        """
+        Move the arm to lift the object.
+        """
+
+        cur_joint = np.array(self._panda.getJointStates()[0])
+        cur_joint[-1] = 0.8  # close finger
+        observations = [self.step(cur_joint, repeat=300, config=True, vis=False)[0]]
+        pos, orn = p.getLinkState(self._panda.pandaUid, self._panda.pandaEndEffectorIndex)[4:6]
+
+        for i in range(10):
+            pos = (pos[0], pos[1], pos[2] + 0.03)
+            jointPoses = np.array(p.calculateInverseKinematics(self._panda.pandaUid,
+                                                               self._panda.pandaEndEffectorIndex, pos,
+                                                               maxNumIterations=500,
+                                                               residualThreshold=1e-8))
+            jointPoses[6] = 0.8
+            jointPoses = jointPoses[:7].copy()
+            obs = self.step(jointPoses, config=True)[0]
+
+        self.retracted = True
+        rew = self._reward()
+        return rew
+
+    def _reward(self):
+        """
+        Calculates the reward for the episode.
+        """
+        reward = 0
+
+        if self.retracted and self.target_lifted():
+            print('target {} lifted !'.format(self.target_name))
+            reward = 1
+        return reward
+
     def cache_objects(self):
         """
         Load all YCB objects and set up
@@ -327,26 +362,31 @@ class SimulatedYCBEnv():
         Process different action types
         """
         # transform to local coordinate
-        pos, orn = p.getLinkState(self._panda.pandaUid, self._panda.pandaEndEffectorIndex)[4:6]
+        if config:
+            if delta:
+                cur_joint = np.array(self._panda.getJointStates()[0])
+                action = cur_joint + action
+        else:
+            pos, orn = p.getLinkState(self._panda.pandaUid, self._panda.pandaEndEffectorIndex)[4:6]
 
-        pose = np.eye(4)
-        pose[:3, :3] = quat2mat(tf_quat(orn))
-        pose[:3, 3] = pos
+            pose = np.eye(4)
+            pose[:3, :3] = quat2mat(tf_quat(orn))
+            pose[:3, 3] = pos
 
-        pose_delta = np.eye(4)
-        pose_delta[:3, :3] = euler2mat(action[3], action[4], action[5])
-        pose_delta[:3, 3] = action[:3]
+            pose_delta = np.eye(4)
+            pose_delta[:3, :3] = euler2mat(action[3], action[4], action[5])
+            pose_delta[:3, 3] = action[:3]
 
-        new_pose = pose.dot(pose_delta)
-        orn = ros_quat(mat2quat(new_pose[:3, :3]))
-        pos = new_pose[:3, 3]
+            new_pose = pose.dot(pose_delta)
+            orn = ros_quat(mat2quat(new_pose[:3, :3]))
+            pos = new_pose[:3, 3]
 
-        jointPoses = np.array(p.calculateInverseKinematics(self._panda.pandaUid,
-                                self._panda.pandaEndEffectorIndex, pos, orn,
-                                maxNumIterations=500,
-                                residualThreshold=1e-8))
-        jointPoses[6] = 0.0
-        action = jointPoses[:7]
+            jointPoses = np.array(p.calculateInverseKinematics(self._panda.pandaUid,
+                                    self._panda.pandaEndEffectorIndex, pos, orn,
+                                    maxNumIterations=500,
+                                    residualThreshold=1e-8))
+            jointPoses[6] = 0.0
+            action = jointPoses[:7]
         return action
 
     def _get_hand_camera_view(self, cam_pose=None):
