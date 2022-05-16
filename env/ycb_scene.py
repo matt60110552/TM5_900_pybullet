@@ -57,7 +57,6 @@ class SimulatedYCBEnv():
         self._timeStep = 1. / 1000.
         self._observation = []
         self._renders = renders
-        self._env_step = 0
         self._resize_img_size = img_resize
 
         self._p = p
@@ -87,7 +86,9 @@ class SimulatedYCBEnv():
         self.root_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
         self._standoff_dist = 0.08
 
-        self.cur_goal = np.eye(4)
+        self.cam_offset = np.eye(4)
+        self.cam_offset[:3, 3] = (np.array([0., 0.1186, -0.0191344123493]))
+        self.cam_offset[:3, :3] = euler2mat(0, 0, np.pi)
 
         self.target_idx = 0
         self.objects_loaded = False
@@ -180,18 +181,16 @@ class SimulatedYCBEnv():
         self._randomly_place_objects(self._get_random_object(self._numObjects), scale=1)
 
         self._objectUids += [self.plane_id, self.table_id]
-        self._env_step = 0
         self.collided = False
         self.collided_before = False
         self.obj_names, self.obj_poses = self.get_env_info()
         self.init_target_height = self._get_target_relative_pose()[2, 3]
         return None  # observation
 
-    def step(self, action, delta=False, obs=True, repeat=None, config=False, vis=False):
+    def step(self, action, delta=False, obs=True, repeat=150, config=False, vis=False):
         """
         Environment step.
         """
-        repeat = 150
         action = self.process_action(action, delta, config)
         self._panda.setTargetPositions(action)
         for _ in range(int(repeat)):
@@ -203,7 +202,6 @@ class SimulatedYCBEnv():
 
         reward = self.target_lifted()
 
-        self._env_step += 1
         return observation, reward, self._get_ef_pose(mat=True)
 
     def _get_observation(self, pose=None, vis=False, acc=True):
@@ -330,7 +328,6 @@ class SimulatedYCBEnv():
         self.place_back_objects()
         self._randomly_place_objects(self._get_random_object(self._numObjects), scale=1)
 
-        self._env_step = 0
         self.retracted = False
         self.collided = False
         self.collided_before = False
@@ -547,6 +544,18 @@ class SimulatedYCBEnv():
             o3d.visualization.draw_geometries([pred_pcd])
 
         return point_state
+
+    def transform_pose_from_camera(self, pose, mat=False):
+        """
+        Input: pose with length 7 [pos_x, pos_y, pos_z, orn_w, orn_x, orn_y, orn_z]
+        Transform from 'pose relative to camera' to 'pose relative to ef'
+        """
+        mat_camera = unpack_pose(list(pose[:3]) + list(pose[3:]))
+
+        if mat:
+            return self.cam_offset.dot(mat_camera)
+        else:
+            return pack_pose(self.cam_offset.dot(mat_camera))
 
     def _get_relative_ef_pose(self):
         """
