@@ -14,7 +14,7 @@ import IPython
 from env.tm5_gripper_hand_camera import TM5
 from transforms3d.quaternions import *
 import scipy.io as sio
-from utils import *
+from utils.utils import *
 import json
 from itertools import product
 
@@ -551,7 +551,6 @@ class SimulatedYCBEnv():
         Transform from 'pose relative to camera' to 'pose relative to ef'
         """
         mat_camera = unpack_pose(list(pose[:3]) + list(pose[3:]))
-
         if mat:
             return self.cam_offset.dot(mat_camera)
         else:
