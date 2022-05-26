@@ -242,7 +242,6 @@ def backproject_camera_target(im_depth, K, target_mask):
     width = im_depth.shape[1]
     height = im_depth.shape[0]
     depth = im_depth.astype(np.float32, copy=True).flatten()
-    mask = (depth != 0) * (target_mask.flatten() == 0)
 
     x, y = np.meshgrid(np.arange(width), np.arange(height))
     ones = np.ones((height, width), dtype=np.float32)
@@ -254,7 +253,11 @@ def backproject_camera_target(im_depth, K, target_mask):
         np.tile(depth.reshape(1, width * height), (3, 1)), R
     )
     X[1] *= -1  # flip y OPENGL. might be required for real-world
-    return X[:, mask]
+    if isinstance(target_mask, np.ndarray):
+        mask = (depth != 0) * (target_mask.flatten() == 0)
+        return X[:, mask]
+    else:
+        return X
 
 
 def backproject_camera_target_realworld(im_depth, K, target_mask):

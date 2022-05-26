@@ -204,7 +204,7 @@ class SimulatedYCBEnv():
 
         return observation, reward, self._get_ef_pose(mat=True)
 
-    def _get_observation(self, pose=None, vis=False, acc=True):
+    def _get_observation(self, pose=None, vis=False, raw_data=False):
         """
         Get observation
         """
@@ -226,21 +226,30 @@ class SimulatedYCBEnv():
                                                    renderer=p.ER_BULLET_HARDWARE_OPENGL)
 
         depth = (far * near / (far - (far - near) * depth) * 5000).astype(np.uint16)  # transform depth from NDC to actual depth
-        mask[mask >= 0] += 1  # transform mask to have target id 0
-        target_idx = self.target_idx + 4
-
-        mask[mask == target_idx] = 0
-        mask[mask == -1] = 50
-        mask[mask != 0] = 1
-
-        obs = np.concatenate([rgba[..., :3], depth[..., None], mask[..., None]], axis=-1)
-        obs = self.process_image(obs[..., :3], obs[..., [3]], obs[..., [4]], tuple(self._resize_img_size))
         intrinsic_matrix = projection_to_intrinsics(hand_proj_matrix, self._window_width, self._window_height)
-        point_state = backproject_camera_target(obs[3].T, intrinsic_matrix, obs[4].T)  # obs[4].T
+        if raw_data:
+            mask[mask <= 2] = -1
+            mask[mask > 0] -= 3
+            obs = np.concatenate([rgba[..., :3], depth[..., None], mask[..., None]], axis=-1)
+            obs = self.process_image(obs[..., :3], obs[..., [3]], obs[..., [4]], tuple(self._resize_img_size), if_raw=True)
+            point_state = backproject_camera_target(obs[3].T, intrinsic_matrix, None)  # obs[4].T
+            point_state[1] *= -1
+            obs = (point_state, obs)
+        else:
+            mask[mask >= 0] += 1  # transform mask to have target id 0
+            target_idx = self.target_idx + 4
 
-        point_state[1] *= -1
-        point_state = self.process_pointcloud(point_state, vis, acc)
-        obs = (point_state, obs)
+            mask[mask == target_idx] = 0
+            mask[mask == -1] = 50
+            mask[mask != 0] = 1
+
+            obs = np.concatenate([rgba[..., :3], depth[..., None], mask[..., None]], axis=-1)
+            obs = self.process_image(obs[..., :3], obs[..., [3]], obs[..., [4]], tuple(self._resize_img_size))
+            point_state = backproject_camera_target(obs[3].T, intrinsic_matrix, obs[4].T)  # obs[4].T
+
+            point_state[1] *= -1
+            point_state = self.process_pointcloud(point_state, vis)
+            obs = (point_state, obs)
         pose_info = (object_pose, ef_pose)
         return [obs, joint_pos, camera_info, pose_info]
 
@@ -612,13 +621,14 @@ class SimulatedYCBEnv():
 
         return obj_dir, poses
 
-    def process_image(self, color, depth, mask, size=None):
+    def process_image(self, color, depth, mask, size=None, if_raw=False):
         """
         Normalize RGBDM
         """
-        color = color.astype(np.float32) / 255.0
-        mask = mask.astype(np.float32)
-        depth = depth.astype(np.float32) / 5000
+        if not if_raw:
+            color = color.astype(np.float32) / 255.0
+            mask = mask.astype(np.float32)
+            depth = depth.astype(np.float32) / 5000
         if size is not None:
             color = cv2.resize(color, size)
             mask = cv2.resize(mask, size)
