@@ -6,7 +6,10 @@ import numpy as np
 
 class ValidGraspChecker():
     def __init__(self, env) -> None:
-        self.robot = p.loadURDF('/home/ros/GA-DDPG/env/models/tm5_900/robotiq_85.urdf',
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        current_dir = current_dir.replace("utils", "env/models")
+        print(current_dir)
+        self.robot = p.loadURDF(os.path.join(current_dir, "tm5_900/robotiq_85.urdf"),
                                 useFixedBase=True)
         self.env = env
 
