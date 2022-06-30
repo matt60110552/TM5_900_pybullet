@@ -52,8 +52,8 @@ class SimulatedYCBEnv():
                  change_dynamics=False,
                  initial_near=0.2,
                  initial_far=0.5,
-                 disable_unnece_collision=False):
-
+                 disable_unnece_collision=False,
+                 use_acronym=False):
         self._timeStep = 1. / 1000.
         self._observation = []
         self._renders = renders
@@ -76,6 +76,7 @@ class SimulatedYCBEnv():
         self._regularize_pc_point_count = regularize_pc_point_count
         self._uniform_num_pts = uniform_num_pts
         self.observation_dim = (self._window_width, self._window_height, 3)
+        self._use_acronym = use_acronym
 
         self.init_constant()
         self.connect()
@@ -299,18 +300,22 @@ class SimulatedYCBEnv():
 
         self.target_obj_indexes = [self._all_obj.index(idx) for idx in self._target_objs]
         pose = np.zeros([len(obj_path), 3])
-        pose[:, 0] = -0.5 - np.linspace(0, 4, len(obj_path))
+        pose[:, 0] = -0.5 - np.linspace(0, 8, len(obj_path))
         pos, orn = p.getBasePositionAndOrientation(self._panda.pandaUid)
         objects_paths = [p_.strip() + '/' for p_ in obj_path]
         objectUids = []
         self.object_heights = []
         self.obj_path = objects_paths + self.obj_path
         self.placed_object_poses = []
+        self.object_scale = []
 
         for i, name in enumerate(objects_paths):
+            mesh_scale = name.split('_')[-1][:-1]
+            name = name.replace(f"_{mesh_scale}/", "/")
+            self.object_scale.append(float(mesh_scale))
             trans = pose[i] + np.array(pos)  # fixed position
             self.placed_object_poses.append((trans.copy(), np.array(orn).copy()))
-            uid = self._add_mesh(os.path.join(self.root_dir, name, 'model_normalized.urdf'), trans, orn)  # xyzw
+            uid = self._add_mesh(os.path.join(self.root_dir, name, 'model_normalized.urdf'), trans, orn, scale=float(mesh_scale))  # xyzw
 
             if self._change_dynamics:
                 p.changeDynamics(uid, -1, lateralFriction=0.15, spinningFriction=0.1, rollingFriction=0.1)
@@ -466,7 +471,13 @@ class SimulatedYCBEnv():
                     self.placed_objects[self.target_idx] = True
                     self.target_name = urdfList[i].split('/')[-2]
                     x_rot = 0
-                    z_init = -.65 + 1.9 * self.object_heights[self.target_idx]
+                    if self._use_acronym:
+                        object_bbox = p.getAABB(self._objectUids[self.target_idx])
+                        height_weight = (object_bbox[1][2] - object_bbox[0][2]) / 2
+                        z_init = -.60 + 2.5 * height_weight
+                    else:
+                        height_weight = self.object_heights[self.target_idx]
+                        z_init = -.65 + 1.95 * height_weight
                     orn = p.getQuaternionFromEuler([x_rot, 0, np.random.uniform(-np.pi, np.pi)])
                     p.resetBasePositionAndOrientation(self._objectUids[self.target_idx],
                                                       [xpos, ypos,  z_init - self._shift[2]],
@@ -480,7 +491,7 @@ class SimulatedYCBEnv():
                     pos, new_orn = p.getBasePositionAndOrientation(self._objectUids[self.target_idx])  # to target
                     ang = np.arccos(2 * np.power(np.dot(tf_quat(orn), tf_quat(new_orn)), 2) - 1) * 180.0 / np.pi
 
-                    if self.target_name in self._filter_objects or ang > 50:
+                    if (self.target_name in self._filter_objects or ang > 50) and not self._use_acronym:  # self.target_name.startswith('0') and
                         self.target_name = 'noexists'
                         self.stack_success = False
 
@@ -549,7 +560,13 @@ class SimulatedYCBEnv():
         self.placed_objects[self.target_idx] = True
         self.target_name = urdfList[0].split('/')[-2]
         x_rot = 0
-        z_init = -.65 + 2 * self.object_heights[self.target_idx]
+        if self._use_acronym:
+            object_bbox = p.getAABB(self._objectUids[self.target_idx])
+            height_weight = (object_bbox[1][2] - object_bbox[0][2]) / 2
+            z_init = -.60 + 2.5 * height_weight
+        else:
+            height_weight = self.object_heights[self.target_idx]
+            z_init = -.65 + 1.95 * height_weight
         orn = p.getQuaternionFromEuler([x_rot, 0, np.random.uniform(-np.pi, np.pi)])
         p.resetBasePositionAndOrientation(self._objectUids[self.target_idx],
                                           [xpos, ypos,  z_init - self._shift[2]], [orn[0], orn[1], orn[2], orn[3]])
@@ -563,7 +580,7 @@ class SimulatedYCBEnv():
         ang = np.arccos(2 * np.power(np.dot(tf_quat(orn), tf_quat(new_orn)), 2) - 1) * 180.0 / np.pi
         print('>>>> target name: {}'.format(self.target_name))
 
-        if self.target_name in self._filter_objects or ang > 50:
+        if (self.target_name in self._filter_objects or ang > 50) and not self._use_acronym:  # self.target_name.startswith('0') and
             self.target_name = 'noexists'
         return []
 
