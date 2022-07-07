@@ -12,6 +12,7 @@ class ValidGraspChecker():
         self.robot = p.loadURDF(os.path.join(current_dir, "tm5_900/robotiq_85.urdf"),
                                 useFixedBase=True)
         self.env = env
+        self.object_num = len(self.env._objectUids)
 
         # To control the gripper
         mimic_parent_name = 'finger_joint'
@@ -43,7 +44,7 @@ class ValidGraspChecker():
                                    childFramePosition=[0, 0, 0])
             p.changeConstraint(c, gearRatio=-multiplier, maxForce=100, erp=1)
 
-        for i in range(-1, 11):
+        for i in range(-1, self.object_num + 1):
             p.setCollisionFilterGroupMask(self.robot, i, 0, 0)
             p.setCollisionFilterPair(0, self.robot, -1, i, 1)
 
@@ -87,7 +88,7 @@ class ValidGraspChecker():
 
             if len(p.getClosestPoints(self.robot, self.env.table_id, 0.0001)):
                 continue
-            elif (not filter_elbow) and (len(box_min[box_min < 0]) == 3) and (len(box_max[box_max > 0]) == 3):
+            elif (filter_elbow) and (len(box_min[box_min < 0]) == 3) and (len(box_max[box_max > 0]) == 3):
                 continue
 
             for uid in placed_uid:
