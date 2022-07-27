@@ -76,8 +76,8 @@ class TM5:
         self.target_pos = []
         self.target_torque = []
         self.pandaEndEffectorIndex = 7
-        self._joint_min_limit = np.array([-4.712385, -3.14159, -2.70526, -3.14159, -3.14159, -4.712385, 0, 0, 0])
-        self._joint_max_limit = np.array([4.712385, 3.14159, 2.70526,  3.14159,  3.14159,  4.712385, 0, 0, 0.8])
+        self._joint_min_limit = np.array([-4.712385, -3.14159, -3.14159, -3.14159, -3.14159, -4.712385, 0, 0, 0])
+        self._joint_max_limit = np.array([4.712385, 3.14159, 3.14159,  3.14159,  3.14159,  4.712385, 0, 0, 0.8])
         self.gripper_range = [0, 0.085]
 
         for j in range(self.dof):
