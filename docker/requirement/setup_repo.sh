@@ -22,7 +22,7 @@ ${SUDO} apt-get -y install libboost-python-dev
 ${SUDO} apt-get -y install libboost-numpy-dev python${PYTHONV}-numpy
 ${SUDO} apt-get -y install pypy3
 
-git clone https://github.com/ompl/ompl.git
+git clone -b 1.5.0 https://github.com/ompl/ompl.git
 cd ompl
 mkdir -p build/Release
 cd build/Release
@@ -30,4 +30,4 @@ cmake ../..
 make -j 4 update_bindings
 make -j 4
 sudo make install
-cp -r /usr/lib/python3.8/site-packages/* /usr/lib/python3/dist-packages/
+# cp -r /usr/lib/python3.8/site-packages/* /usr/lib/python3/dist-packages/
