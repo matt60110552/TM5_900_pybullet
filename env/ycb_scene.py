@@ -104,7 +104,7 @@ class SimulatedYCBEnv():
             if (self.cid < 0):
                 self.cid = p.connect(p.GUI)
 
-            p.resetDebugVisualizerCamera(1.3, 180.0, -41.0, [-0.35, -0.58, -0.88])
+            p.resetDebugVisualizerCamera(3, 180.0, -41.0, [0, 0, 0])
 
         else:
             self.cid = p.connect(p.DIRECT)
@@ -162,8 +162,8 @@ class SimulatedYCBEnv():
         table_file = os.path.join(self.root_dir,  'data/objects/table/models/model_normalized.urdf')
 
         self.obj_path = [plane_file, table_file]
-        self.plane_id = p.loadURDF(plane_file, [0 - self._shift[0], 0 - self._shift[1], -.82 - self._shift[2]])
-        self.table_pos = np.array([0.5 - self._shift[0], 0.0 - self._shift[1], -.82 - self._shift[2]])
+        self.plane_id = p.loadURDF(plane_file, [0, 0, 0], useFixedBase=True)
+        self.table_pos = np.array([0.8, 0.0, 0.01])
         self.table_id = p.loadURDF(table_file, self.table_pos[0], self.table_pos[1], self.table_pos[2],
                                    0.707, 0., 0., 0.707)
 
@@ -186,6 +186,142 @@ class SimulatedYCBEnv():
         self.collided_before = False
         self.obj_names, self.obj_poses = self.get_env_info()
         self.init_target_height = self._get_target_relative_pose()[2, 3]
+        return None  # observation
+
+    def pillar_reset(self, init_joints=None, pillars_xy=None):
+        """
+        init_joints: list of TM5's joint, length can be 6 or 7
+        pillar_xy: 2d list of pillars' x and y position, dim 0's length can be 0(no pillar), dim1's length should  be at least 2.
+        """
+        self.disconnect()
+        self.connect()
+        look = [0.1 - self._shift[0], 0.2 - self._shift[1], 0 - self._shift[2]]
+        distance = 2.5
+        pitch = -56
+        yaw = 245
+        roll = 0.
+        fov = 20.
+        aspect = float(self._window_width) / self._window_height
+        self.near = 0.1
+        self.far = 10
+        self._view_matrix = p.computeViewMatrixFromYawPitchRoll(look, distance, yaw, pitch, roll, 2)
+        self._proj_matrix = p.computeProjectionMatrixFOV(fov, aspect, self.near, self.far)
+        self._light_position = np.array([-1.0, 0, 2.5])
+        self.pillars_pos = {}
+        self.pillar_ids = []
+
+        p.resetSimulation()
+        p.setTimeStep(self._timeStep)
+        p.setPhysicsEngineParameter(enableConeFriction=0)
+
+        p.setGravity(0, 0, -9.81)
+        p.stepSimulation()
+
+        # Set table and plane
+        plane_file = os.path.join(self.root_dir,  'data/objects/floor/model_normalized.urdf')  # _white
+        pillar_file = os.path.join(self.root_dir,  'data/objects/cylinder_collision/model.urdf')
+
+        self.obj_path = [plane_file, pillar_file]
+        self.plane_id = p.loadURDF(plane_file, [0, 0, 0], useFixedBase=True)
+        if pillars_xy is None:
+            self.pillar_ids = None
+        else:
+            for xy in pillars_xy:
+                pillar_pos = np.array([xy[0], xy[1], 0.25])
+                id = p.loadURDF(pillar_file, pillar_pos, [1, 0., 0., 0.], useFixedBase=True)
+                self.pillar_ids.append(id)
+                self.pillars_pos[id] = pillar_pos
+
+        print(self.pillars_pos)
+
+        # Intialize robot and objects
+        if init_joints is None:
+            self._panda = TM5(stepsize=self._timeStep)
+
+        else:
+            self._panda = TM5(stepsize=self._timeStep, init_joints=init_joints)
+            for _ in range(1000):
+                p.stepSimulation()
+
+    def cabinet_reset(self, save=False, init_joints=None, num_object=1, if_stack=True,
+                      cam_random=0, reset_free=False, enforce_face_target=False):
+        """
+        Environment reset called at the beginning of an episode.
+        """
+        self.retracted = False
+        if reset_free:
+            return self.cache_reset(init_joints, enforce_face_target, num_object=num_object, if_stack=if_stack)
+
+        self.disconnect()
+        self.connect()
+
+        # Set the camera  .
+        look = [0.1 - self._shift[0], 0.2 - self._shift[1], 0 - self._shift[2]]
+        distance = 2.5
+        pitch = -56
+        yaw = 245
+        roll = 0.
+        fov = 20.
+        aspect = float(self._window_width) / self._window_height
+        self.near = 0.1
+        self.far = 10
+        self._view_matrix = p.computeViewMatrixFromYawPitchRoll(look, distance, yaw, pitch, roll, 2)
+        self._proj_matrix = p.computeProjectionMatrixFOV(fov, aspect, self.near, self.far)
+        self._light_position = np.array([-1.0, 0, 2.5])
+
+        p.resetSimulation()
+        p.setTimeStep(self._timeStep)
+        p.setPhysicsEngineParameter(enableConeFriction=0)
+
+        p.setGravity(0, 0, -9.81)
+        p.stepSimulation()
+
+        # Set table and plane
+        plane_file = os.path.join(self.root_dir,  'data/objects/floor/model_normalized.urdf')  # _white
+        cabinet_file = os.path.join(self.root_dir,  'data/objects/bookcase/model.urdf')
+
+        self.obj_path = [plane_file, cabinet_file]
+        self.plane_id = p.loadURDF(plane_file, [0, 0, 0], useFixedBase=True)
+        self.cabinet_pos = np.array([0.8, 0.0, 0.01])
+        self.table_pos = self.cabinet_pos
+        self.cabinet_id = p.loadURDF(cabinet_file, [self.cabinet_pos[0], self.cabinet_pos[1], self.cabinet_pos[2]],
+                                     [0., 0., 0., 1.], useFixedBase=True)
+
+        # Intialize robot and objects
+        if init_joints is None:
+            self._panda = TM5(stepsize=self._timeStep, base_shift=self._shift)
+
+        else:
+            self._panda = TM5(stepsize=self._timeStep, init_joints=init_joints, base_shift=self._shift)
+            for _ in range(1000):
+                p.stepSimulation()
+
+        if not self.objects_loaded:
+            self._objectUids = self.cache_objects()
+        self._objectUids += [self.plane_id, self.cabinet_id]
+        self.collided = False
+        self.collided_before = False
+        self.obj_names, self.obj_poses = self.get_env_info()
+        self.init_target_height = self._get_target_relative_pose()[2, 3]
+
+        #  choose a random object to place on the cabinet
+
+        urdfList = self._get_random_object(num_object)
+        obj_path = '/'.join(urdfList[0].split('/')[:-1]) + '/'
+        self.target_idx = self.obj_path.index(os.path.join(self.root_dir, obj_path))
+        self.placed_objects[self.target_idx] = True
+        self.target_name = urdfList[0].split('/')[-2]
+        orn = p.getQuaternionFromEuler([0, 0, np.random.uniform(-np.pi, np.pi)])
+        p.resetBasePositionAndOrientation(self._objectUids[self.target_idx],
+                                          [0.7, 0,  0.65], [orn[0], orn[1], orn[2], orn[3]])  # for cabinet and bookcase
+        # p.resetBasePositionAndOrientation(self._objectUids[self.target_idx],
+        #                                   [0.7, 0,  0.3], [orn[0], orn[1], orn[2], orn[3]])  # for carton_box
+        p.resetBaseVelocity(
+            self._objectUids[self.target_idx], (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
+        )
+        for _ in range(2000):
+            p.stepSimulation()
+
         return None  # observation
 
     def step(self, action, delta=False, obs=True, repeat=150, config=False, vis=False):
@@ -219,6 +355,7 @@ class SimulatedYCBEnv():
         camera_info = tuple(view_matrix) + tuple(proj_matrix)
         hand_cam_view_matrix, hand_proj_matrix, lightDistance, lightColor, lightDirection, near, far = self._get_hand_camera_view(pose)
         camera_info += tuple(hand_cam_view_matrix.flatten()) + tuple(hand_proj_matrix)
+        print(f"hand_proj_matrix: {hand_proj_matrix}")
         _, _, rgba, depth, mask = p.getCameraImage(width=self._window_width,
                                                    height=self._window_height,
                                                    viewMatrix=tuple(hand_cam_view_matrix.flatten()),
@@ -228,6 +365,7 @@ class SimulatedYCBEnv():
 
         depth = (far * near / (far - (far - near) * depth) * 5000).astype(np.uint16)  # transform depth from NDC to actual depth
         intrinsic_matrix = projection_to_intrinsics(hand_proj_matrix, self._window_width, self._window_height)
+        print(f"intrinsic_matrix: {intrinsic_matrix}")
         if raw_data:
             mask[mask <= 2] = -1
             mask[mask > 0] -= 3
@@ -235,6 +373,11 @@ class SimulatedYCBEnv():
             obs = self.process_image(obs[..., :3], obs[..., [3]], obs[..., [4]], tuple(self._resize_img_size), if_raw=True)
             point_state = backproject_camera_target(obs[3].T, intrinsic_matrix, None)  # obs[4].T
             point_state[1] *= -1
+            if vis:
+                pred_pcd = o3d.geometry.PointCloud()
+                pred_pcd.points = o3d.utility.Vector3dVector(point_state.T[:, :3])
+                axis_pcd = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
+                o3d.visualization.draw_geometries([pred_pcd] + [axis_pcd])
             obs = (point_state, obs)
         else:
             mask[mask >= 0] += 1  # transform mask to have target id 0
@@ -453,14 +596,14 @@ class SimulatedYCBEnv():
                 self.place_back_objects()
                 for i in range(len(urdfList)):
                     if i == 0:
-                        xpos = 0.5 - self._shift[0]
-                        ypos = -self._shift[0]
+                        xpos = 0.8
+                        ypos = 0
                     else:
                         spare = False
                         while not spare:
                             spare = True
-                            xpos = 0.5 + 0.28 * (random.random() - 0.5) - self._shift[0]
-                            ypos = 0.9 * self._blockRandom * (random.random() - 0.5) - self._shift[0]
+                            xpos = 0.8 + 0.28 * (random.random() - 0.5)
+                            ypos = 0.28 * (random.random() - 0.5)
                             for idx in range(len(self.placed_objects)):
                                 if self.placed_objects[idx]:
                                     pos, _ = p.getBasePositionAndOrientation(self._objectUids[idx])
@@ -474,13 +617,13 @@ class SimulatedYCBEnv():
                     if self._use_acronym:
                         object_bbox = p.getAABB(self._objectUids[self.target_idx])
                         height_weight = (object_bbox[1][2] - object_bbox[0][2]) / 2
-                        z_init = -.60 + 2.5 * height_weight
+                        z_init = .3 + 2.5 * height_weight
                     else:
                         height_weight = self.object_heights[self.target_idx]
-                        z_init = -.65 + 1.95 * height_weight
+                        z_init = .35 + 1.95 * height_weight
                     orn = p.getQuaternionFromEuler([x_rot, 0, np.random.uniform(-np.pi, np.pi)])
                     p.resetBasePositionAndOrientation(self._objectUids[self.target_idx],
-                                                      [xpos, ypos,  z_init - self._shift[2]],
+                                                      [xpos, ypos,  z_init],
                                                       [orn[0], orn[1], orn[2], orn[3]])
                     p.resetBaseVelocity(
                         self._objectUids[self.target_idx], (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
@@ -522,17 +665,17 @@ class SimulatedYCBEnv():
                     p.changeDynamics(self.wall[i], linkIndex=-1, mass=0)
 
                 for i in range(len(urdfList)):
-                    xpos = 0.5 - self._shift[0] + 0.17 * (random.random() - 0.5)
-                    ypos = -self._shift[0] + 0.23 * (random.random() - 0.5)
+                    xpos = 0.8 + 0.17 * (random.random() - 0.5)
+                    ypos = 0.23 * (random.random() - 0.5)
                     obj_path = '/'.join(urdfList[i].split('/')[:-1]) + '/'
                     self.target_idx = self.obj_path.index(os.path.join(self.root_dir, obj_path))
                     self.placed_objects[self.target_idx] = True
                     self.target_name = urdfList[i].split('/')[-2]
                     x_rot = 0
-                    z_init = -.26 + 2 * self.object_heights[self.target_idx]
+                    z_init = .6 + 2 * self.object_heights[self.target_idx]
                     orn = p.getQuaternionFromEuler([x_rot, 0, np.random.uniform(-np.pi, np.pi)])
                     p.resetBasePositionAndOrientation(self._objectUids[self.target_idx],
-                                                      [xpos, ypos,  z_init - self._shift[2]],
+                                                      [xpos, ypos,  z_init],
                                                       [orn[0], orn[1], orn[2], orn[3]])
                     p.resetBaseVelocity(
                         self._objectUids[self.target_idx], (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
@@ -544,7 +687,7 @@ class SimulatedYCBEnv():
                 for i in range(8):
                     p.removeBody(self.wall[i])
 
-                for _ in range(2000):
+                for _ in range(3000):
                     p.stepSimulation()
 
     def _randomly_place_objects(self, urdfList, scale, poses=None):
@@ -552,8 +695,8 @@ class SimulatedYCBEnv():
         Randomize positions of each object urdf.
         """
 
-        xpos = 0.5 + 0.2 * (self._blockRandom * random.random() - 0.5) - self._shift[0]
-        ypos = 0.5 * self._blockRandom * (random.random() - 0.5) - self._shift[0]
+        xpos = 0.8 + 0.2 * (self._blockRandom * random.random() - 0.5)
+        ypos = 0.2 * (self._blockRandom * random.random() - 0.5)
         obj_path = '/'.join(urdfList[0].split('/')[:-1]) + '/'
 
         self.target_idx = self.obj_path.index(os.path.join(self.root_dir, obj_path))
@@ -563,13 +706,13 @@ class SimulatedYCBEnv():
         if self._use_acronym:
             object_bbox = p.getAABB(self._objectUids[self.target_idx])
             height_weight = (object_bbox[1][2] - object_bbox[0][2]) / 2
-            z_init = -.60 + 2.5 * height_weight
+            z_init = .35 + 2.5 * height_weight
         else:
             height_weight = self.object_heights[self.target_idx]
-            z_init = -.65 + 1.95 * height_weight
+            z_init = .4 + 1.95 * height_weight
         orn = p.getQuaternionFromEuler([x_rot, 0, np.random.uniform(-np.pi, np.pi)])
         p.resetBasePositionAndOrientation(self._objectUids[self.target_idx],
-                                          [xpos, ypos,  z_init - self._shift[2]], [orn[0], orn[1], orn[2], orn[3]])
+                                          [xpos, ypos,  z_init], [orn[0], orn[1], orn[2], orn[3]])
         p.resetBaseVelocity(
             self._objectUids[self.target_idx], (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
         )
@@ -642,10 +785,12 @@ class SimulatedYCBEnv():
         """
         Normalize RGBDM
         """
+        depth = depth.astype(np.float32) / 5000
+        color = color.astype(np.float32) / 255.0
         if not if_raw:
-            color = color.astype(np.float32) / 255.0
+            # color = color.astype(np.float32) / 255.0
             mask = mask.astype(np.float32)
-            depth = depth.astype(np.float32) / 5000
+            # depth = depth.astype(np.float32) / 5000
         if size is not None:
             color = cv2.resize(color, size)
             mask = cv2.resize(mask, size)
@@ -664,7 +809,8 @@ class SimulatedYCBEnv():
         if vis:
             pred_pcd = o3d.geometry.PointCloud()
             pred_pcd.points = o3d.utility.Vector3dVector(point_state.T[:, :3])
-            o3d.visualization.draw_geometries([pred_pcd])
+            axis_pcd = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
+            o3d.visualization.draw_geometries([pred_pcd] + [axis_pcd])
 
         return point_state
 

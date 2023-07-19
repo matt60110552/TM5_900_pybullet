@@ -31,7 +31,7 @@ class TM5:
         self.robot = p.loadURDF("tm5_900/tm5_900_with_gripper.urdf",
                                 useFixedBase=True,
                                 flags=p.URDF_USE_SELF_COLLISION)
-        self._base_position = [-0.05 - base_shift[0], 0.0 - base_shift[1], -0.65 - base_shift[2]]
+        self._base_position = [-0.05 - base_shift[0], 0.0 - base_shift[1], -0.82 - base_shift[2]]
         self.pandaUid = self.robot
 
         # robot parameters
@@ -69,6 +69,10 @@ class TM5:
 
         p.setCollisionFilterPair(self.robot, self.robot, 11, 13, 0)
         p.setCollisionFilterPair(self.robot, self.robot, 16, 18, 0)
+        p.setCollisionFilterPair(self.robot, self.robot, 6, 8, 0)  # The three lines below are use to disable the collision between links.
+        p.setCollisionFilterPair(self.robot, self.robot, 12, 13, 0)
+        p.setCollisionFilterPair(self.robot, self.robot, 17, 18, 0)
+        p.setCollisionFilterPair(self.robot, self.robot, 15, 18, 0)
 
         self.joints = []
         self.q_min = []
@@ -94,8 +98,10 @@ class TM5:
     def reset(self, joints=None):
         self.t = 0.0
         self.control_mode = "position"
-        p.resetBasePositionAndOrientation(self.pandaUid, self._base_position,
-                                          [0.000000, 0.000000, 0.000000, 1.000000])
+        # p.resetBasePositionAndOrientation(self.pandaUid, self._base_position,
+        #                                   [0.000000, 0.000000, 0.000000, 1.000000])
+        p.resetBasePositionAndOrientation(self.pandaUid, [0, 0, 0],
+                                          [0.000000, 0.000000, 0.000000, 1.000000])        
         if joints is None:
             self.target_pos = [
                     0.2, -1, 2, 0, 1.571, 0.0, 0.0, 0.0, 0.0]
