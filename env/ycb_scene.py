@@ -366,7 +366,7 @@ class SimulatedYCBEnv():
         depth = (far * near / (far - (far - near) * depth) * 5000).astype(np.uint16)  # transform depth from NDC to actual depth
         intrinsic_matrix = projection_to_intrinsics(hand_proj_matrix, self._window_width, self._window_height)
         print(f"intrinsic_matrix: {intrinsic_matrix}")
-        if raw_data:
+        if raw_data is True:
             mask[mask <= 2] = -1
             mask[mask > 0] -= 3
             obs = np.concatenate([rgba[..., :3], depth[..., None], mask[..., None]], axis=-1)
@@ -379,14 +379,25 @@ class SimulatedYCBEnv():
                 axis_pcd = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
                 o3d.visualization.draw_geometries([pred_pcd] + [axis_pcd])
             obs = (point_state, obs)
-        else:
+        if raw_data == "obstacle":
             mask[mask >= 0] += 1  # transform mask to have target id 0
             target_idx = self.target_idx + 4
-
             mask[mask == target_idx] = 0
             mask[mask == -1] = 50
             mask[mask != 0] = 1
+            obs = np.concatenate([rgba[..., :3], depth[..., None], mask[..., None]], axis=-1)
+            obs = self.process_image(obs[..., :3], obs[..., [3]], obs[..., [4]], tuple(self._resize_img_size))
+            inv_mask = np.logical_not(obs[4].T).astype(int)
+            point_state = backproject_camera_target(obs[3].T, intrinsic_matrix, inv_mask)  # obs[4].T
 
+            point_state[1] *= -1
+            obs = (point_state, obs)
+        else:
+            mask[mask >= 0] += 1  # transform mask to have target id 0
+            target_idx = self.target_idx + 4
+            mask[mask == target_idx] = 0
+            mask[mask == -1] = 50
+            mask[mask != 0] = 1
             obs = np.concatenate([rgba[..., :3], depth[..., None], mask[..., None]], axis=-1)
             obs = self.process_image(obs[..., :3], obs[..., [3]], obs[..., [4]], tuple(self._resize_img_size))
             point_state = backproject_camera_target(obs[3].T, intrinsic_matrix, obs[4].T)  # obs[4].T
