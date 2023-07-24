@@ -54,7 +54,7 @@ class SimulatedYCBEnv():
                  initial_far=0.5,
                  disable_unnece_collision=False,
                  use_acronym=False):
-        self._timeStep = 1. / 1000.
+        self._timeStep = 1. / 2000.
         self._observation = []
         self._renders = renders
         self._resize_img_size = img_resize
@@ -341,7 +341,7 @@ class SimulatedYCBEnv():
 
         return observation, reward, self._get_ef_pose(mat=True)
 
-    def _get_observation(self, pose=None, vis=False, raw_data=False):
+    def _get_observation(self, pose=None, vis=False, raw_data=False, no_gripper=False):
         """
         Get observation
         """
@@ -355,7 +355,6 @@ class SimulatedYCBEnv():
         camera_info = tuple(view_matrix) + tuple(proj_matrix)
         hand_cam_view_matrix, hand_proj_matrix, lightDistance, lightColor, lightDirection, near, far = self._get_hand_camera_view(pose)
         camera_info += tuple(hand_cam_view_matrix.flatten()) + tuple(hand_proj_matrix)
-        print(f"hand_proj_matrix: {hand_proj_matrix}")
         _, _, rgba, depth, mask = p.getCameraImage(width=self._window_width,
                                                    height=self._window_height,
                                                    viewMatrix=tuple(hand_cam_view_matrix.flatten()),
@@ -365,13 +364,17 @@ class SimulatedYCBEnv():
 
         depth = (far * near / (far - (far - near) * depth) * 5000).astype(np.uint16)  # transform depth from NDC to actual depth
         intrinsic_matrix = projection_to_intrinsics(hand_proj_matrix, self._window_width, self._window_height)
-        print(f"intrinsic_matrix: {intrinsic_matrix}")
         if raw_data is True:
-            mask[mask <= 2] = -1
-            mask[mask > 0] -= 3
+            # mask[mask <= 2] = -1
+            # mask[mask > 0] -= 3
             obs = np.concatenate([rgba[..., :3], depth[..., None], mask[..., None]], axis=-1)
             obs = self.process_image(obs[..., :3], obs[..., [3]], obs[..., [4]], tuple(self._resize_img_size), if_raw=True)
-            point_state = backproject_camera_target(obs[3].T, intrinsic_matrix, None)  # obs[4].T
+            if no_gripper is True:
+                mask[mask != 2] = 0  # set the pixel of others to 0
+                mask[mask == 2] = 1  # set the pixel of gripper to 1
+                point_state = backproject_camera_target(obs[3].T, intrinsic_matrix, mask)
+            else:
+                point_state = backproject_camera_target(obs[3].T, intrinsic_matrix, None)  # obs[4].T
             point_state[1] *= -1
             if vis:
                 pred_pcd = o3d.geometry.PointCloud()
@@ -379,7 +382,7 @@ class SimulatedYCBEnv():
                 axis_pcd = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
                 o3d.visualization.draw_geometries([pred_pcd] + [axis_pcd])
             obs = (point_state, obs)
-        if raw_data == "obstacle":
+        elif raw_data == "obstacle":
             mask[mask >= 0] += 1  # transform mask to have target id 0
             target_idx = self.target_idx + 4
             mask[mask == target_idx] = 0
@@ -389,7 +392,6 @@ class SimulatedYCBEnv():
             obs = self.process_image(obs[..., :3], obs[..., [3]], obs[..., [4]], tuple(self._resize_img_size))
             inv_mask = np.logical_not(obs[4].T).astype(int)
             point_state = backproject_camera_target(obs[3].T, intrinsic_matrix, inv_mask)  # obs[4].T
-
             point_state[1] *= -1
             obs = (point_state, obs)
         else:
@@ -717,10 +719,17 @@ class SimulatedYCBEnv():
         if self._use_acronym:
             object_bbox = p.getAABB(self._objectUids[self.target_idx])
             height_weight = (object_bbox[1][2] - object_bbox[0][2]) / 2
-            z_init = .35 + 2.5 * height_weight
+            # z_init = .35 + 2.5 * height_weight # original setting by h-chen
+            z_init = .35
         else:
             height_weight = self.object_heights[self.target_idx]
-            z_init = .4 + 1.95 * height_weight
+            # z_init = .4 + 1.95 * height_weight # original setting by h-chen
+            z_init = .4
+        print(f"xpos: {xpos}")
+        print(f"ypos: {ypos}")
+        print(f"z_init: {z_init}")
+        print(f"self._objectUids[self.target_idx]: {self._objectUids[self.target_idx]}")
+        print(f"height_weight: {height_weight}")
         orn = p.getQuaternionFromEuler([x_rot, 0, np.random.uniform(-np.pi, np.pi)])
         p.resetBasePositionAndOrientation(self._objectUids[self.target_idx],
                                           [xpos, ypos,  z_init], [orn[0], orn[1], orn[2], orn[3]])
