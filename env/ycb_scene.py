@@ -383,11 +383,13 @@ class SimulatedYCBEnv():
                 o3d.visualization.draw_geometries([pred_pcd] + [axis_pcd])
             obs = (point_state, obs)
         elif raw_data == "obstacle":
+            gripper_idx = np.where(mask == 2)  # ignore the gripper's points
             mask[mask >= 0] += 1  # transform mask to have target id 0
             target_idx = self.target_idx + 4
             mask[mask == target_idx] = 0
             mask[mask == -1] = 50
             mask[mask != 0] = 1
+            mask[gripper_idx] = 0
             obs = np.concatenate([rgba[..., :3], depth[..., None], mask[..., None]], axis=-1)
             obs = self.process_image(obs[..., :3], obs[..., [3]], obs[..., [4]], tuple(self._resize_img_size))
             inv_mask = np.logical_not(obs[4].T).astype(int)
