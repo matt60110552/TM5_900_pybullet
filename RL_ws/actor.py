@@ -40,6 +40,7 @@ class ActorWrapper(object):
         self.policy_id = policy_id
 
     def rollout_once(self, expert=True):
+        start = time.time()
         self.env.reset(save=False, enforce_face_target=False, reset_free=True)
         if expert is True:
             rewards = self.expert_move()
@@ -49,6 +50,8 @@ class ActorWrapper(object):
             """
             rewards = self.policy_move()
             raise NotImplementedError
+        duration = time.time() - start
+        print(f"actor duration: {duration}")
         return rewards
 
     def test(self):
@@ -140,7 +143,7 @@ class ActorWrapper(object):
         done = 0
         reward = 0
         while not done:
-            pc_state = self.get_pc_state()
+            pc_state, target_points, gripper_points = self.get_pc_state()
             joint_state = self.get_joint_degree()
             state = self.policy_id.get_feature_for_policy(pc_state, joint_state)
             dis_embed, conti_latent = self.policy_id.select_action.remote(state)
@@ -148,7 +151,7 @@ class ActorWrapper(object):
             dis_action = self.policy_id.select_discrete_action.remote(dis_embed)
 
             obs = self.env.step(conti_action, config=True, repeat=200)[0]
-            next_pc_state = self.get_pc_state()
+            next_pc_state, next_target_points, next_gripper_points = self.get_pc_state()
             next_joint_state = self.get_joint_degree()
             if dis_action == 1:
                 """
@@ -183,9 +186,11 @@ class ActorWrapper(object):
 
         for i in range(len(path)):
             # get the state
-            pc_state = self.get_pc_state()
+            pc_state, target_points, gripper_points = self.get_pc_state()
             joint_state = self.get_joint_degree()
             dis_action = 0
+            distance = self.get_distance(target_points, gripper_points)
+            # orientation = self.get_orientation(gripper_points, target_points)
 
             next_pos = path[i]
             jointPoses = self.env._panda.solveInverseKinematics(next_pos[:3], ros_quat(next_pos[3:]))
@@ -195,22 +200,31 @@ class ActorWrapper(object):
 
             # get next state and done and reward
             con_action = jointPoses[:6]
-            next_pc_state = self.get_pc_state()
+            next_pc_state, next_target_points, next_gripper_points = self.get_pc_state()
             next_joint_state = self.get_joint_degree()
-            reward = 0
+            next_distance = self.get_distance(next_target_points, next_gripper_points)
+            # next_orientation = self.get_orientation(next_gripper_points, next_target_points)
+
+            dis_reward = distance - next_distance
+            # ori_reward = next_orientation - orientation
+
+            # print(f"dis_reward: {dis_reward}")
+            # print(f"ori_reward: {ori_reward}")
+            # print("================")
+            reward = dis_reward
             done = 0
             self.buffer_id.add.remote(pc_state, joint_state, con_action, dis_action, next_pc_state, next_joint_state, reward, done)
 
         for i in range(2):
             # get the state
-            pc_state = self.get_pc_state()
+            pc_state, target_points, gripper_points = self.get_pc_state()
             joint_state = self.get_joint_degree()
             dis_action = 0
 
             self.env.step(action=np.array([0, 0, 0.015, 0, 0, 0]))
 
             # get next state and done and reward
-            next_pc_state = self.get_pc_state()
+            next_pc_state, next_target_points, next_gripper_points = self.get_pc_state()
             next_joint_state = self.get_joint_degree()
             con_action = next_joint_state - joint_state
             reward = 0
@@ -233,7 +247,7 @@ class ActorWrapper(object):
             final_pointcloud = np.concatenate((target_pointcloud, gripper_points), axis=0)
         else:
             final_pointcloud = gripper_points
-        return final_pointcloud
+        return final_pointcloud, gripper_points
 
     def get_world_pointcloud(self, raw_data=False, no_gripper=False):
         obs, joint_pos, camera_info, pose_info = self.env._get_observation(raw_data=raw_data, vis=False, no_gripper=no_gripper)
@@ -262,17 +276,92 @@ class ActorWrapper(object):
         obstacle_points = np.hstack((obstacle_points, np.zeros((obstacle_points.shape[0], 1))))
         target_points = np.hstack((target_points, np.ones((target_points.shape[0], 1))))
 
-        all_points = np.vstack((obstacle_points, target_points))
-        gripper_pc = self.get_gripper_points(all_points)
-        return gripper_pc
+        scene_points = np.vstack((obstacle_points, target_points))
+        all_pc, gripper_points = self.get_gripper_points(scene_points)
+        return all_pc, target_points, gripper_points
+
+    # def get_distance(self, source_cloud, target_cloud):
+    #     # Expand dimensions to enable broadcasting
+    #     source_cloud = source_cloud.unsqueeze(1)  # Shape: (N, 1, 3)
+    #     target_cloud = target_cloud.unsqueeze(0)  # Shape: (1, M, 3)
+
+    #     # Compute the Euclidean distance between all pairs of points
+    #     distance_matrix = torch.norm(source_cloud - target_cloud, dim=-1)  # Shape: (N, M)
+
+    #     # Find the minimum distance for each source point
+    #     min_distances, _ = torch.min(distance_matrix, dim=1)  # Shape: (N,)
+
+    #     # Find the overall minimum distance
+    #     min_distance = torch.min(min_distances)  # Scalar
+
+    #     return min_distance.item()
+
+    # def get_orientation(self, gripper_points, target_points):
+    #     # Extract the individual gripper points
+    #     gripper_left = gripper_points[0]
+    #     gripper_right = gripper_points[1]
+    #     gripper_back = gripper_points[2]
+
+    #     # Calculate the middle point between the left and right gripper points
+    #     gripper_middle = (gripper_left + gripper_right) / 2.0
+    #     # Compute the vector from the back to the middle of the left and right gripper points
+    #     gripper_vector = gripper_middle - gripper_back
+    #     # Calculate the mean of the target points
+    #     target_mean = torch.mean(target_points, dim=0)
+    #     # Compute the vector pointing from the back gripper point to the mean of the target point cloud
+    #     target_vector = target_mean - gripper_back
+    #     # Normalize the vectors
+    #     gripper_vector = torch.nn.functional.normalize(gripper_vector, dim=-1)
+    #     target_vector = torch.nn.functional.normalize(target_vector, dim=-1)
+    #     # Calculate the dot product between the gripper vector and the target vector
+    #     dot_product = torch.sum(gripper_vector * target_vector)
+
+    #     return dot_product.item()
+    def get_distance(self, source_cloud, target_cloud):
+        # Expand dimensions to enable broadcasting
+        source_cloud = source_cloud[:, np.newaxis, :]  # Shape: (N, 1, 3)
+        target_cloud = target_cloud[np.newaxis, :, :]  # Shape: (1, M, 3)
+
+        # Compute the Euclidean distance between all pairs of points
+        distance_matrix = np.linalg.norm(source_cloud - target_cloud, axis=-1)  # Shape: (N, M)
+
+        # Find the minimum distance for each source point
+        min_distances = np.min(distance_matrix, axis=1)  # Shape: (N,)
+
+        # Find the overall minimum distance
+        min_distance = np.min(min_distances)  # Scalar
+
+        return min_distance
+
+    def get_orientation(self, gripper_points, target_points):
+        # Extract the individual gripper points
+        gripper_left = gripper_points[0]
+        gripper_right = gripper_points[1]
+        gripper_back = gripper_points[2]
+
+        # Calculate the middle point between the left and right gripper points
+        gripper_middle = (gripper_left + gripper_right) / 2.0
+        # Compute the vector from the back to the middle of the left and right gripper points
+        gripper_vector = gripper_middle - gripper_back
+        # Calculate the mean of the target points
+        target_mean = np.mean(target_points, axis=0)
+        # Compute the vector pointing from the back gripper point to the mean of the target point cloud
+        target_vector = target_mean - gripper_back
+        # Normalize the vectors
+        gripper_vector = gripper_vector / np.linalg.norm(gripper_vector)
+        target_vector = target_vector / np.linalg.norm(target_vector)
+        # Calculate the dot product between the gripper vector and the target vector
+        dot_product = np.dot(gripper_vector, target_vector)
+        print(f"dot_product: {dot_product}")
+        return dot_product
 
 
-@ray.remote(num_cpus=1, num_gpus=0.12)
+@ray.remote(num_cpus=1)
 class ActorWrapper012(ActorWrapper):
     pass
 
 
-@ray.remote(num_cpus=3)
+@ray.remote(num_cpus=1)
 class ReplayMemoryWrapper(ReplayBuffer):
     pass
 

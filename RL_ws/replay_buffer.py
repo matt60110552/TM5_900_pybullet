@@ -91,6 +91,6 @@ class ReplayBuffer(object):
         np.savez(filename, **data_dict)
 
 
-@ray.remote(num_cpus=3)
+@ray.remote(num_cpus=1)
 class ReplayMemoryWrapper(ReplayBuffer):
     pass

@@ -122,17 +122,22 @@ class QNetwork(nn.Module):
         num_inputs=576,
         hidden_dim=512,
         latent_size=64,
+        conti_dim=6
     ):
         super(QNetwork, self).__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.num_inputs = num_inputs
+        """
+        576 is for point feat(512) and joint feat(64)
+        The two below is for dis_action(64) and conti_action(64)
+        """
         # Q1 architecture
-        self.linear1 = nn.Linear(num_inputs + latent_size, hidden_dim)
+        self.linear1 = nn.Linear(num_inputs + 2 * latent_size, hidden_dim)
         self.linear2 = nn.Linear(hidden_dim, hidden_dim)
         self.linear3 = nn.Linear(hidden_dim, 1)
 
         # Q2 architecture
-        self.linear4 = nn.Linear(num_inputs + latent_size, hidden_dim)
+        self.linear4 = nn.Linear(num_inputs + 2 * latent_size, hidden_dim)
         self.linear5 = nn.Linear(hidden_dim, hidden_dim)
         self.linear6 = nn.Linear(hidden_dim, 1)
 
@@ -140,24 +145,17 @@ class QNetwork(nn.Module):
 
     def forward(self, state, discrete_action, parameter_action):
 
-        sa = torch.cat([state, discrete_action, parameter_action], 1) if self.hybrid else torch.cat([state, parameter_action], 1)
+        sa1 = torch.cat((state, discrete_action, parameter_action), 1)
+        sa2 = torch.cat((state, discrete_action, parameter_action), 1)
         x3 = None
-        x1 = F.relu(self.linear1(sa))
+        x1 = F.relu(self.linear1(sa1))
         x1 = F.relu(self.linear2(x1))
         x1 = self.linear3(x1)
 
-        x2 = F.relu(self.linear4(sa))
+        x2 = F.relu(self.linear4(sa2))
         x2 = F.relu(self.linear5(x2))
         x2 = self.linear6(x2)
 
-        if self.extra_pred_dim and self.hybrid:
-            x3 = F.relu(self.linear7(sa))
-            x3 = F.relu(self.linear8(x3))
-            x3 = self.extra_pred(x3)
-            if self.extra_pred_dim == 7:  # normalize quaternion
-                x3 = torch.cat((F.normalize(x3[:, :4], p=2, dim=-1), x3[:, 4:]), dim=-1)
-            else:
-                x3 = None
         return x1, x2, x3
 
     def state_discriminate(self, state):
