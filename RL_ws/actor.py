@@ -8,6 +8,7 @@ from mpl_toolkits.mplot3d import Axes3D
 import sys
 import ray
 import os
+import datetime
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
@@ -31,7 +32,7 @@ class ActorWrapper(object):
         # file_dir = file_dir['test']
         file_dir = [f[:-5] for f in file_dir]
         test_file_dir = list(set(file_dir))
-        self.env = SimulatedYCBEnv(renders=False)
+        self.env = SimulatedYCBEnv(renders=True)
         self.env._load_index_objs(test_file_dir)
         self.env.reset(save=False, enforce_face_target=True)
         self.grasp_checker = ValidGraspChecker(self.env)
@@ -43,7 +44,11 @@ class ActorWrapper(object):
         start = time.time()
         self.env.reset(save=False, enforce_face_target=False, reset_free=True)
         if expert is True:
+            print(f"in rollouot_once, before expert_move {datetime.datetime.now()}")
+            print(f">>>>>>>>>>>>>>>>>>>>>>")
             rewards = self.expert_move()
+            print(f"in rollouot_once, after expert_move {datetime.datetime.now()}")
+            print(f">>>>>>>>>>>>>>>>>>>>>>")
         else:
             """
             Use actor to react to the state
@@ -213,8 +218,9 @@ class ActorWrapper(object):
             # print("================")
             reward = dis_reward
             done = 0
-            self.buffer_id.add.remote(pc_state, joint_state, con_action, dis_action, next_pc_state, next_joint_state, reward, done)
-
+            
+            ray.get([self.buffer_id.add.remote(pc_state, joint_state, con_action, dis_action, next_pc_state, next_joint_state, reward, done)])
+            
         for i in range(2):
             # get the state
             pc_state, target_points, gripper_points = self.get_pc_state()
@@ -233,7 +239,11 @@ class ActorWrapper(object):
                 done = 1
                 dis_action = 1
                 reward = self.env.retract()
-            self.buffer_id.add.remote(pc_state, joint_state, con_action, dis_action, next_pc_state, next_joint_state, reward, done)
+            print(f"in actor and before ray.get {datetime.datetime.now()}")
+            print("===========================")
+            ray.get([self.buffer_id.add.remote(pc_state, joint_state, con_action, dis_action, next_pc_state, next_joint_state, reward, done)])
+            print(f"in actor and after ray.get {datetime.datetime.now()}")
+            print("===========================")
         return reward
 
     def get_gripper_points(self, target_pointcloud=None):

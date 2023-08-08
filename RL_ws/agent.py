@@ -9,6 +9,7 @@ import os
 import ray
 import sys
 import time
+import datetime
 from networks import Feature_extractor, GaussianPolicy, ConditionalPredictNetwork, QNetwork
 from actor import ActorWrapper012
 from replay_buffer import ReplayBuffer
@@ -137,12 +138,12 @@ class AgentWrapper(object):
             # The return of ray.get([self.replay_buffer_id.sample.remote(batch_size)])
             # is list, so use the [0] to get the tuple at index 0
             ####################################################################################
-            print(f"in cvae train1", end="\n")
+            print(f"in cvae train1 {datetime.datetime.now()}", end="\n")
             (pc_state, joint_state, conti_action,
                 dis_action, next_pc_state, next_joint_state,
                 reward, done) = ray.get([self.replay_buffer_id.sample.remote(batch_size)])[0]
 
-            print(f"in cvae train2", end="\n")
+            print(f"in cvae train2 {datetime.datetime.now()}", end="\n")
             self.pc_state = self.prepare_data(pc_state)
             self.joint_state = self.prepare_data(joint_state)
             self.conti_action = self.prepare_data(conti_action)
@@ -197,7 +198,7 @@ class AgentWrapper(object):
 
         """
         start = time.time()
-        for _ in range(5):
+        for _ in range(4):
             print(f"in policy train1", end="\n")
             (pc_state, joint_state, conti_action,
                 dis_action, next_pc_state, next_joint_state,
@@ -299,7 +300,7 @@ class AgentWrapper012(AgentWrapper):
     pass
 
 
-@ray.remote(num_cpus=3)
+@ray.remote(num_cpus=1)
 class ReplayMemoryWrapper(ReplayBuffer):
     pass
 
