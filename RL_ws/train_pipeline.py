@@ -8,7 +8,7 @@ import ray
 import time
 from cvae_model import CVAE
 # from replay_buffer import ReplayMemoryWrapper
-from agent import AgentWrapper012, ReplayMemoryWrapper
+from agent import AgentWrapper012, ReplayMemoryWrapper, RolloutWrapper012
 from actor import ActorWrapper012
 from torch.utils.tensorboard import SummaryWriter
 import argparse
@@ -30,16 +30,15 @@ if __name__ == "__main__":
     args = parser.parse_args()
     cvae_train_times = 1
     policy_train_times = 1
-    actor_num = 7
-    batch_size = 10
+    actor_num = 3
+    batch_size = 16
     timestep = 0
     cvae_save_frequency = args.cvae_save_frequency
     policy_save_frequency = args.policy_save_frequency
 
-
-    ray.init(num_cpus=12, num_gpus=2)
+    ray.init(num_cpus=12)
     replay_buffer_id = ReplayMemoryWrapper.remote(state_dim=2048, con_action_dim=64)
-    rollout_agent_id = AgentWrapper012.remote(replay_buffer_id)
+    rollout_agent_id = RolloutWrapper012.remote(replay_buffer_id)
     learner_id = AgentWrapper012.remote(replay_buffer_id)
     actor_ids = [ActorWrapper012.remote(replay_buffer_id, rollout_agent_id) for _ in range(actor_num)]
     current_file_path = os.path.abspath(__file__).replace('/train_pipeline.py', '/')

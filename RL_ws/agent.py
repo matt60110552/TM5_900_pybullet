@@ -294,8 +294,13 @@ class AgentWrapper(object):
         return self.cvae.emb_table
 
 
-@ray.remote(num_cpus=1, num_gpus=0.5)
+@ray.remote(num_cpus=1, num_gpus=1)
 class AgentWrapper012(AgentWrapper):
+    pass
+
+
+@ray.remote(num_cpus=1, num_gpus=0.12)
+class RolloutWrapper012(AgentWrapper):
     pass
 
 
