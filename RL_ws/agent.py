@@ -34,6 +34,8 @@ class AgentWrapper(object):
         self.timestep = 0
         self.policy_freq = 5
         self.discount = 0.99
+        self.cvae_loop_time = 8
+        self.policy_loop_time = 8
 
     def select_action(self, state):
         """
@@ -133,17 +135,15 @@ class AgentWrapper(object):
         start = time.time()
         self.cvae.train()
         self.encoder_feat_extractor.train()
-        for _ in range(5):
+        for _ in range(self.cvae_loop_time):
             ####################################################################################
             # The return of ray.get([self.replay_buffer_id.sample.remote(batch_size)])
             # is list, so use the [0] to get the tuple at index 0
             ####################################################################################
-            print(f"in cvae train1 {datetime.datetime.now()}", end="\n")
             (pc_state, joint_state, conti_action,
                 dis_action, next_pc_state, next_joint_state,
                 reward, done) = ray.get([self.replay_buffer_id.sample.remote(batch_size)])[0]
 
-            print(f"in cvae train2 {datetime.datetime.now()}", end="\n")
             self.pc_state = self.prepare_data(pc_state)
             self.joint_state = self.prepare_data(joint_state)
             self.conti_action = self.prepare_data(conti_action)
@@ -198,13 +198,10 @@ class AgentWrapper(object):
 
         """
         start = time.time()
-        for _ in range(4):
-            print(f"in policy train1", end="\n")
+        for _ in range(self.policy_loop_time):
             (pc_state, joint_state, conti_action,
                 dis_action, next_pc_state, next_joint_state,
                 reward, done) = ray.get([self.replay_buffer_id.sample.remote(batch_size)])[0]
-
-            print(f"in policy train2", end="\n")
             self.pc_state = self.prepare_data(pc_state)
             self.joint_state = self.prepare_data(joint_state)
             self.conti_action = self.prepare_data(conti_action)
@@ -233,6 +230,8 @@ class AgentWrapper(object):
 
             # Delayed Actor update
             if timestep % self.policy_freq == 0:
+                print(f"training policy net")
+                print(f"====================")
                 all_feat = self.get_feature_for_policy(self.pc_state, self.joint_state)
                 discrete_action, continue_action = self.policy(all_feat)
                 q1, q2, _ = self.critic(all_feat, discrete_action, continue_action)
