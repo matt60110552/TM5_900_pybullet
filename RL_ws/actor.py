@@ -26,19 +26,23 @@ class ActorWrapper(object):
     """
     def __init__(self, buffer_id, policy_id):
         # from env.ycb_scene import SimulatedYCBEnv
-        file = os.path.join("object_index", 'acronym_matt.json')
+        file = os.path.join("object_index", 'acronym_90.json')
         with open(file) as f: file_dir = json.load(f)
         file_dir = file_dir['train']
         # file_dir = file_dir['test']
         file_dir = [f[:-5] for f in file_dir]
         test_file_dir = list(set(file_dir))
-        self.env = SimulatedYCBEnv(renders=False)
+        test_file_dir = random.sample(test_file_dir, 15)
+        self.env = SimulatedYCBEnv(renders=True)
         self.env._load_index_objs(test_file_dir)
         self.env.reset(save=False, enforce_face_target=True)
         self.grasp_checker = ValidGraspChecker(self.env)
         self.planner = GraspPlanner()
         self.buffer_id = buffer_id
         self.policy_id = policy_id
+
+        self.target_points = None   # This is for merging point-cloud from different time
+        self.obstacle_points = None
 
     def rollout_once(self, expert=True):
         start = time.time()
@@ -181,13 +185,41 @@ class ActorWrapper(object):
         return reward
 
     def expert_move(self):
+        self.target_points = None
+        self.obstacle_points = None
+        pos, ori = p.getBasePositionAndOrientation(self.env._objectUids[self.env.target_idx])
+        fixed_joint_constraint = p.createConstraint(
+            parentBodyUniqueId=self.env._objectUids[self.env.target_idx],
+            parentLinkIndex=-1,
+            childBodyUniqueId=-1,
+            childLinkIndex=-1,
+            jointType=p.JOINT_FIXED,
+            jointAxis=[0, 0, 0],
+            parentFramePosition=[0, 0, 0],
+            childFramePosition=pos,
+            childFrameOrientation=ori
+            )
         grasp_pose = self.get_grasp_pose()
+        if grasp_pose is None:
+            p.removeConstraint(fixed_joint_constraint)
+            self.env.place_back_objects()
+            return 0
+        # make the gripper retreat a little
+        z_axis_direction = grasp_pose[:3, 2]
+        grasp_pose[:3, 3] -= 0.02 * z_axis_direction
         grasp_pose = pack_pose(grasp_pose)
         path = self.expert_plan(grasp_pose, world=True)
 
         for i in range(len(path)):
             # get the state
             pc_state, target_points, gripper_points = self.get_pc_state()
+            # print(f"length of target_points: {target_points.shape}")
+            if target_points.shape[0] == 0:
+                # print(f"target_points.shape[0]: {target_points.shape[0]}")
+                # print(f"no target points!!!")
+                p.removeConstraint(fixed_joint_constraint)
+                self.env.place_back_objects()
+                return 0
             joint_state = self.get_joint_degree()
             dis_action = 0
             distance = self.get_distance(target_points, gripper_points)
@@ -233,6 +265,7 @@ class ActorWrapper(object):
             if i == 1:
                 done = 1
                 dis_action = 1
+                p.removeConstraint(fixed_joint_constraint)
                 reward = self.env.retract()
             ray.get([self.buffer_id.add.remote(pc_state, joint_state, con_action, dis_action, next_pc_state, next_joint_state, reward, done)])
         return reward
@@ -266,7 +299,7 @@ class ActorWrapper(object):
         con_action = np.array([i[0] for i in con_action])
         return con_action
 
-    def get_pc_state(self):
+    def get_pc_state(self, vis=False):
         """
         The output pc should be (2048, 4)
         The first 1021 points is for obstacle, then the 1024 is for target, 3 for gripper,
@@ -274,50 +307,28 @@ class ActorWrapper(object):
         """
         obstacle_points = self.get_world_pointcloud(raw_data="obstacle")
         target_points = self.get_world_pointcloud(raw_data=False)
+        if self.target_points is not None and self.obstacle_points is not None:
+            # print(f"self.target_points: {self.target_points.shape}")
+            # print(f"self.obstacle_points: {self.obstacle_points.shape}")
+            target_points = regularize_pc_point_count(np.vstack((target_points, self.target_points)), 1024)
+            obstacle_points = regularize_pc_point_count(np.vstack((obstacle_points, self.obstacle_points)), 1021)
+        self.target_points = target_points
+        self.obstacle_points = obstacle_points
+        if vis:
+            target_o3d_pc = o3d.geometry.PointCloud()
+            target_o3d_pc.points = o3d.utility.Vector3dVector(target_points)
+            obstacle_o3d_pc = o3d.geometry.PointCloud()
+            obstacle_o3d_pc.points = o3d.utility.Vector3dVector(obstacle_points)
+            axis_pcd = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
+            o3d.visualization.draw_geometries([obstacle_o3d_pc]+[target_o3d_pc]+[axis_pcd])
+
         obstacle_points = np.hstack((obstacle_points, np.zeros((obstacle_points.shape[0], 1))))
         target_points = np.hstack((target_points, np.ones((target_points.shape[0], 1))))
-
+        # print(f"in get_pc_state, target_points.shape: {target_points.shape}")
         scene_points = np.vstack((obstacle_points, target_points))
         all_pc, gripper_points = self.get_gripper_points(scene_points)
         return all_pc, target_points, gripper_points
 
-    # def get_distance(self, source_cloud, target_cloud):
-    #     # Expand dimensions to enable broadcasting
-    #     source_cloud = source_cloud.unsqueeze(1)  # Shape: (N, 1, 3)
-    #     target_cloud = target_cloud.unsqueeze(0)  # Shape: (1, M, 3)
-
-    #     # Compute the Euclidean distance between all pairs of points
-    #     distance_matrix = torch.norm(source_cloud - target_cloud, dim=-1)  # Shape: (N, M)
-
-    #     # Find the minimum distance for each source point
-    #     min_distances, _ = torch.min(distance_matrix, dim=1)  # Shape: (N,)
-
-    #     # Find the overall minimum distance
-    #     min_distance = torch.min(min_distances)  # Scalar
-
-    #     return min_distance.item()
-
-    # def get_orientation(self, gripper_points, target_points):
-    #     # Extract the individual gripper points
-    #     gripper_left = gripper_points[0]
-    #     gripper_right = gripper_points[1]
-    #     gripper_back = gripper_points[2]
-
-    #     # Calculate the middle point between the left and right gripper points
-    #     gripper_middle = (gripper_left + gripper_right) / 2.0
-    #     # Compute the vector from the back to the middle of the left and right gripper points
-    #     gripper_vector = gripper_middle - gripper_back
-    #     # Calculate the mean of the target points
-    #     target_mean = torch.mean(target_points, dim=0)
-    #     # Compute the vector pointing from the back gripper point to the mean of the target point cloud
-    #     target_vector = target_mean - gripper_back
-    #     # Normalize the vectors
-    #     gripper_vector = torch.nn.functional.normalize(gripper_vector, dim=-1)
-    #     target_vector = torch.nn.functional.normalize(target_vector, dim=-1)
-    #     # Calculate the dot product between the gripper vector and the target vector
-    #     dot_product = torch.sum(gripper_vector * target_vector)
-
-    #     return dot_product.item()
     def get_distance(self, source_cloud, target_cloud):
         # Expand dimensions to enable broadcasting
         source_cloud = source_cloud[:, np.newaxis, :]  # Shape: (N, 1, 3)

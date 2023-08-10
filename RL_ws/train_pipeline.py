@@ -19,22 +19,23 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Paper: https://arxiv.org/abs/1802.09477
 
 parser = argparse.ArgumentParser(description="Description of your script.")
-parser.add_argument("--cvae_train_times", type=int, default=1, help="How many time should cvae train")
+parser.add_argument("--cvae_train_times", type=int, default=10, help="How many time should cvae train")
 parser.add_argument("--policy_train_times", type=int, default=1, help="How many time should cvae and policy train")
 parser.add_argument("--log_dir", type=str, default="RL_ws/logs", help="where is the record")
-parser.add_argument("--cvae_save_frequency", type=int, default=1, help="How many steps cvae take to save once")
+parser.add_argument("--cvae_save_frequency", type=int, default=10, help="How many steps cvae take to save once")
 parser.add_argument("--policy_save_frequency", type=int, default=1, help="How many steps policy take to save once")
 
 
 if __name__ == "__main__":
     args = parser.parse_args()
-    cvae_train_times = 1
-    policy_train_times = 1
+    cvae_train_times = args.cvae_train_times
+    policy_train_times = args.policy_train_times
+    cvae_save_frequency = args.cvae_save_frequency
+    policy_save_frequency = args.policy_save_frequency
     actor_num = 3
     batch_size = 16
     timestep = 0
-    cvae_save_frequency = args.cvae_save_frequency
-    policy_save_frequency = args.policy_save_frequency
+    
 
     ray.init(num_cpus=12)
     replay_buffer_id = ReplayMemoryWrapper.remote(state_dim=2048, con_action_dim=64)
