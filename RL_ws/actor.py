@@ -33,7 +33,7 @@ class ActorWrapper(object):
         file_dir = [f[:-5] for f in file_dir]
         test_file_dir = list(set(file_dir))
         test_file_dir = random.sample(test_file_dir, 15)
-        self.env = SimulatedYCBEnv(renders=True)
+        self.env = SimulatedYCBEnv(renders=False)
         self.env._load_index_objs(test_file_dir)
         self.env.reset(save=False, enforce_face_target=True)
         self.grasp_checker = ValidGraspChecker(self.env)
@@ -232,7 +232,8 @@ class ActorWrapper(object):
             obs = self.env.step(jointPoses, config=True, repeat=200)[0]
 
             # get next state and done and reward
-            con_action = jointPoses[:6]
+            # con_action = jointPoses[:6]
+            con_action = jointPoses[:6] + joint_state  # Literally the next joint state
             next_pc_state, next_target_points, next_gripper_points = self.get_pc_state()
             next_joint_state = self.get_joint_degree()
             next_distance = self.get_distance(next_target_points, next_gripper_points)

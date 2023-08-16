@@ -8,6 +8,8 @@ import IPython
 import numpy as np
 import sys
 from Point_NN.models.point_pn import EncP
+from pointmlp import pointMLPElite
+
 
 import torch.nn.functional as F
 from torch.distributions import Normal
@@ -48,21 +50,28 @@ class PointNetFeature(nn.Module):
     ):
         super(PointNetFeature, self).__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.point_encoder = EncP(in_channels=4, input_points=2048, num_stages=4, embed_dim=36, k_neighbors=40, beta=100, alpha=1000, LGA_block=[2,1,1,1], dim_expansion=[2,2,2,1], type='mn40')
-        self.linear_out = torch.nn.Linear(288, 512)
+        # self.point_encoder = EncP(in_channels=4, input_points=2048, num_stages=4, embed_dim=36, k_neighbors=40, beta=100, alpha=1000, LGA_block=[2,1,1,1], dim_expansion=[2,2,2,1], type='mn40')
+        # self.linear_out = torch.nn.Linear(288, 512)
+        self.point_encoder = pointMLPElite(points=2048, in_channel=4, feature_dim=512)
         self.point_encoder.apply(weights_init_)
 
     def forward(
         self,
-        pc,
+        x,
     ):
         """
         The input shape of pointcloud has to be (batch_size, n, 4)
         """
-
-        xyz_feats = pc.permute(0, 2, 1)
-        points = pc[:, :, :3].clone()
-        point_feats = self.linear_out(self.point_encoder(points, xyz_feats))
+        batch_size, _, channel = x.size()
+        x = x.contiguous()
+        # if channel == 3:
+        #     xyz = x
+        # else:
+        #     xyz = x[:, :, :3]
+        point_feats = self.point_encoder(x.permute(0, 2, 1))
+        # xyz_feats = pc.permute(0, 2, 1)
+        # points = pc[:, :, :3].clone()
+        # point_feats = self.linear_out(self.point_encoder(points, xyz_feats))
         return point_feats
 
 
@@ -205,6 +214,7 @@ class ConditionalPredictNetwork(nn.Module):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         init_tensor = torch.rand(2, latent_size) * 2 - 1  # Don't initialize near the extremes.
         self.emb_table = torch.nn.Parameter(init_tensor.type(torch.float32), requires_grad=True)
+        self.max_joint_limit = np.array([4.712385, 3.14159, 3.14159,  3.14159,  3.14159,  4.712385])  # min_limit has same value with negative    
 
         # Encoder
         # Input size is 576(512 for point, 64 for joint) plus 64(discrete action)
@@ -221,7 +231,7 @@ class ConditionalPredictNetwork(nn.Module):
         self.linear2 = self.get_mlp(hidden_dim, hidden_dim, hidden_dim)
         self.reconstruct = nn.Linear(hidden_dim, num_actions)
         self.linear3 = self.get_mlp(hidden_dim, hidden_dim, hidden_dim)
-        self.state_predict = nn.Linear(hidden_dim, 2048*3)
+        self.state_predict = nn.Linear(hidden_dim, 3*3)
 
         self.apply(weights_init_)
         self.action_space = action_space
@@ -251,10 +261,10 @@ class ConditionalPredictNetwork(nn.Module):
         x = F.relu(self.linear2(x1 * x2))
         x_t = self.reconstruct(x)
 
-        action_recon = torch.tanh(x_t)
+        action_recon = torch.tanh(x_t) * torch.from_numpy(self.max_joint_limit).float().to(self.device)
         if state_recon:
             state_pred = self.state_predict(F.relu(self.linear3(x)))
-            state_pred = state_pred.view(-1, 2048, 3)
+            state_pred = state_pred.view(-1, 3, 3)
             return action_recon, state_pred
         else:
             return action_recon, None

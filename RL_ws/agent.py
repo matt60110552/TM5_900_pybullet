@@ -34,8 +34,10 @@ class AgentWrapper(object):
         self.timestep = 0
         self.policy_freq = 5
         self.discount = 0.99
-        self.cvae_loop_time = 8
-        self.policy_loop_time = 8
+        self.cvae_loop_time = 20
+        self.policy_loop_time = 20
+        self.beta = 0.00005
+        self.alpha = 0.005
 
     def select_action(self, state):
         """
@@ -59,7 +61,7 @@ class AgentWrapper(object):
             cvae.parameters(), lr=1e-4, eps=1e-5, weight_decay=1e-5)
         cvae_scheduler = StepLR.MultiStepLR(
             cvae_optim,
-            milestones=[30, 80, 120],
+            milestones=[50, 80, 100, 120],
             gamma=0.5,
         )
         return cvae, cvae_optim, cvae_scheduler
@@ -131,10 +133,13 @@ class AgentWrapper(object):
         dist = x_norm + y_norm - 2.0 * torch.mm(x, y_t)
         return dist
 
-    def cvae_train(self, batch_size):
+    def cvae_train(self, batch_size, timestep, all_step):
         start = time.time()
         self.cvae.train()
         self.encoder_feat_extractor.train()
+        con_recon_loss_list = []
+        kl_loss_list = []
+        gripper_pre_loss_list = []
         for _ in range(self.cvae_loop_time):
             ####################################################################################
             # The return of ray.get([self.replay_buffer_id.sample.remote(batch_size)])
@@ -155,20 +160,34 @@ class AgentWrapper(object):
 
             self.all_feat = self.get_feature_for_encoder(self.pc_state, self.joint_state)
             self.dis_embeddings = self.cvae.emb_table[self.dis_action]
-            self.action_recon, self.state_next, self.mean, self.log_std = self.cvae(self.all_feat, self.dis_embeddings, self.conti_action)
+            self.action_recon, self.gripper_next, self.mean, self.log_std = self.cvae(self.all_feat, self.dis_embeddings, self.conti_action)
+
 
             con_recon_loss = F.mse_loss(self.conti_action, self.action_recon)
+            # print(f"(conti_action: {self.conti_action} action_recon: {self.action_recon}")
             kl_loss = self.kl_divergence_loss(self.mean, self.log_std)
-            total_loss = con_recon_loss + self.discount * kl_loss
+            gripper_pre_loss = F.mse_loss(self.next_pc_state[:, -3:, :3], self.gripper_next)
+
+            self.beta = 0.0001 * min(1.0, timestep / (all_step//2))
+            total_loss = con_recon_loss + self.beta * kl_loss + self.alpha * gripper_pre_loss
 
             self.encoder_feat_extractor_optim.zero_grad()
             self.cvae_optim.zero_grad()
             total_loss.backward()
             self.cvae_optim.step()
             self.encoder_feat_extractor_optim.step()
+
+            con_recon_loss_list.append(con_recon_loss.detach().cpu().numpy())
+            kl_loss_list.append(kl_loss.detach().cpu().numpy())
+            gripper_pre_loss_list.append(gripper_pre_loss.detach().cpu().numpy())
+
         duration = time.time() - start
-        print(f"train duration: {duration}", end="\n")
-        return (con_recon_loss, kl_loss)
+        print(f"cvae duration: {duration}", end="\n")
+
+        mean_con_recon_loss = sum(con_recon_loss_list)/len(con_recon_loss_list)
+        mean_kl_loss = sum(kl_loss_list)/len(kl_loss_list)
+        mean_gripper_pre_loss = sum(gripper_pre_loss_list)/len(gripper_pre_loss_list)
+        return (mean_con_recon_loss, mean_kl_loss, mean_gripper_pre_loss)
 
     def kl_divergence_loss(self, mean, log_std):
         # Compute the element-wise KL divergence for each sample
@@ -187,7 +206,7 @@ class AgentWrapper(object):
         Trying to backward through the graph a second time 
         (or directly access saved tensors after they have already been freed).
         Saved intermediate values of the graph are freed when you call .backward() or autograd.grad().
-        Specify retain_graph=True if you need to backward through the graph a second time or 
+        Specify retain_graph=True if you need to backward through the graph a second time or
         if you need to access saved tensors after calling backward.
 
         Do all the process again can avoid the error, like this:
@@ -197,6 +216,13 @@ class AgentWrapper(object):
         By doing this line again, the error disappear.
 
         """
+        critic_loss_list = []
+        policy_loss_list = []
+        self.critic.train()
+        self.critic_target.train()
+        self.policy.train()
+        self.policy_target.train()
+        self.policy_feat_extractor.train()
         start = time.time()
         for _ in range(self.policy_loop_time):
             (pc_state, joint_state, conti_action,
@@ -228,10 +254,11 @@ class AgentWrapper(object):
             critic_loss.backward()
             self.critic_optim.step()
 
+            critic_loss_list.append(critic_loss.detach().cpu().numpy())
             # Delayed Actor update
             if timestep % self.policy_freq == 0:
-                print(f"training policy net")
-                print(f"====================")
+                # print(f"training policy net")
+                # print(f"====================")
                 all_feat = self.get_feature_for_policy(self.pc_state, self.joint_state)
                 discrete_action, continue_action = self.policy(all_feat)
                 q1, q2, _ = self.critic(all_feat, discrete_action, continue_action)
@@ -244,11 +271,16 @@ class AgentWrapper(object):
                 # Update target networks with Polyak averaging
                 self.soft_update(source=self.policy, target=self.policy_target, tau=self.tau)
                 self.soft_update(source=self.critic, target=self.critic_target, tau=self.tau)
+                policy_loss_list.append(policy_loss.detach().cpu().numpy())
             else:
                 policy_loss = None
+
         duration = time.time() - start
         print(f"policy duration: {duration}", end="\n")
-        return (critic_loss, policy_loss)
+
+        mean_critic_loss = sum(critic_loss_list)/len(critic_loss_list)
+        mean_policy_loss = sum(policy_loss_list)/len(policy_loss_list) if timestep % self.policy_freq == 0 else None
+        return (mean_critic_loss, mean_policy_loss)
 
     def get_target_q_value(self, next_all_feat):
         dis_action, conti_action = self.policy_target(next_all_feat)
@@ -262,7 +294,7 @@ class AgentWrapper(object):
         ):
             target_param.data.copy_(target_param.data * (1.0 - tau) + source_param.data * tau)
 
-    def save(self, filename):
+    def save(self, filename, timestep):
         save_dict = {
             "cvae": self.cvae.state_dict(),
             "cvae_optim": self.cvae_optim.state_dict(),
@@ -270,8 +302,9 @@ class AgentWrapper(object):
             "critic_optim": self.critic_optim.state_dict(),
             "policy": self.policy.state_dict(),
             "policy_optim": self.policy_optim.state_dict(),
+            "timestep": timestep
         }
-        torch.save(save_dict, filename)
+        torch.save(save_dict, filename + ".pth")
 
     def load(self, filename):
         load_dict = torch.load(filename)
@@ -283,10 +316,11 @@ class AgentWrapper(object):
         self.policy.load_state_dict(load_dict["policy"])
         self.policy_optim.load_state_dict(load_dict["policy_optim"])
         self.policy_target = copy.deepcopy(self.policy)
+        return load_dict["timestep"]
 
     def prepare_data(self, input):
         if not isinstance(input, torch.Tensor):
-            return torch.from_numpy(input).to(self.device).to(torch.float)
+            return torch.from_numpy(input).float().to(self.device)
         else:
             return input
 
