@@ -278,15 +278,15 @@ class PosExtraction(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, points=1024, class_num=40, embed_dim=64, groups=1, res_expansion=1.0,
+    def __init__(self, points=1024, embed_dim=64, groups=1, res_expansion=1.0, in_channel=3, feature_dim=1024,
                  activation="relu", bias=True, use_xyz=True, normalize="center",
                  dim_expansion=[2, 2, 2, 2], pre_blocks=[2, 2, 2, 2], pos_blocks=[2, 2, 2, 2],
                  k_neighbors=[32, 32, 32, 32], reducers=[2, 2, 2, 2], **kwargs):
         super(Model, self).__init__()
         self.stages = len(pre_blocks)
-        self.class_num = class_num
         self.points = points
-        self.embedding = ConvBNReLU1D(3, embed_dim, bias=bias, activation=activation)
+        self.feature_dim = feature_dim
+        self.embedding = ConvBNReLU1D(in_channel, embed_dim, bias=bias, activation=activation)
         assert len(pre_blocks) == len(k_neighbors) == len(reducers) == len(pos_blocks) == len(dim_expansion), \
             "Please check stage number consistent for pre_blocks, pos_blocks k_neighbors, reducers."
         self.local_grouper_list = nn.ModuleList()
@@ -318,52 +318,55 @@ class Model(nn.Module):
 
         self.act = get_activation(activation)
         self.classifier = nn.Sequential(
-            nn.Linear(last_channel, 512),
-            nn.BatchNorm1d(512),
+            nn.Linear(last_channel, 1024),
+            nn.BatchNorm1d(1024),
             self.act,
-            nn.Dropout(0.5),
-            nn.Linear(512, 256),
-            nn.BatchNorm1d(256),
-            self.act,
-            nn.Dropout(0.5),
-            nn.Linear(256, self.class_num)
+            nn.Linear(1024, self.feature_dim),
+            nn.BatchNorm1d(self.feature_dim),
+            self.act
         )
 
     def forward(self, x):
-        xyz = x.permute(0, 2, 1)
-        batch_size, _, _ = x.size()
+        batch_size, channel, _ = x.size()
+        if channel == 3:
+            xyz = x.permute(0, 2, 1)
+        else:
+            xyz = x[:, :3, :].permute(0, 2, 1)
         x = self.embedding(x)  # B,D,N
-        for i in range(self.stages):
+        stage = len(self.pre_blocks_list)
+        for i in range(stage):
             # Give xyz[b, p, 3] and fea[b, p, d], return new_xyz[b, g, 3] and new_fea[b, g, k, d]
             xyz, x = self.local_grouper_list[i](xyz, x.permute(0, 2, 1))  # [b,g,3]  [b,g,k,d]
             x = self.pre_blocks_list[i](x)  # [b,d,g]
             x = self.pos_blocks_list[i](x)  # [b,d,g]
 
         x = F.adaptive_max_pool1d(x, 1).squeeze(dim=-1)
-        # x = self.classifier(x)
+        x = self.classifier(x)
         return x
 
 
-
-
-def pointMLP(num_classes=40, **kwargs) -> Model:
-    return Model(points=1024, class_num=num_classes, embed_dim=64, groups=1, res_expansion=1.0,
+def pointMLP(points=1024, in_channel=4, feature_dim=512, **kwargs) -> Model:
+    return Model(points=points, embed_dim=64, groups=1, res_expansion=1.0, in_channel=in_channel, feature_dim=feature_dim,
                    activation="relu", bias=False, use_xyz=False, normalize="anchor",
                    dim_expansion=[2, 2, 2, 2], pre_blocks=[2, 2, 2, 2], pos_blocks=[2, 2, 2, 2],
                    k_neighbors=[24, 24, 24, 24], reducers=[2, 2, 2, 2], **kwargs)
 
 
-def pointMLPElite(num_classes=40, **kwargs) -> Model:
-    return Model(points=1024, class_num=num_classes, embed_dim=32, groups=1, res_expansion=0.25,
+def pointMLPElite(points=1024, in_channel=4, feature_dim=512, **kwargs) -> Model:
+    return Model(points=points, embed_dim=32, groups=1, res_expansion=0.25, in_channel=in_channel, feature_dim=feature_dim,
                    activation="relu", bias=False, use_xyz=False, normalize="anchor",
                    dim_expansion=[2, 2, 2, 1], pre_blocks=[1, 1, 2, 1], pos_blocks=[1, 1, 2, 1],
                    k_neighbors=[24,24,24,24], reducers=[2, 2, 2, 2], **kwargs)
 
 
 if __name__ == '__main__':
-    data = torch.rand(2, 3, 1024).to("cuda")
+    data = torch.rand(4, 4, 1024).cuda()
     print("===> testing pointMLP ...")
-    model = pointMLP().to("cuda")
-    out = model(data)
-    print(out.shape)
+    model = pointMLP().cuda()
+    model = torch.nn.DataParallel(model)
 
+    # model = torch.compile(model)
+    print(type(model.module.classifier))
+    for i in range(5):
+        out = model(data)
+    print(out.shape)

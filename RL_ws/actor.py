@@ -24,7 +24,7 @@ class ActorWrapper(object):
     """
     wrapper testing, use ray to create multiple pybullet
     """
-    def __init__(self, buffer_id, policy_id):
+    def __init__(self, online_buffer_id, buffer_id, policy_id, renders=False):
         # from env.ycb_scene import SimulatedYCBEnv
         file = os.path.join("object_index", 'acronym_90.json')
         with open(file) as f: file_dir = json.load(f)
@@ -33,13 +33,14 @@ class ActorWrapper(object):
         file_dir = [f[:-5] for f in file_dir]
         test_file_dir = list(set(file_dir))
         test_file_dir = random.sample(test_file_dir, 15)
-        self.env = SimulatedYCBEnv(renders=False)
+        self.env = SimulatedYCBEnv(renders=renders)
         self.env._load_index_objs(test_file_dir)
         self.env.reset(save=False, enforce_face_target=True)
         self.grasp_checker = ValidGraspChecker(self.env)
         self.planner = GraspPlanner()
         self.buffer_id = buffer_id
         self.policy_id = policy_id
+        self.online_buffer_id = online_buffer_id
 
         self.target_points = None   # This is for merging point-cloud from different time
         self.obstacle_points = None
@@ -54,7 +55,7 @@ class ActorWrapper(object):
             Use actor to react to the state
             """
             rewards = self.policy_move()
-            raise NotImplementedError
+
         duration = time.time() - start
         print(f"actor duration: {duration}")
         return rewards
@@ -147,41 +148,49 @@ class ActorWrapper(object):
     def policy_move(self):
         done = 0
         reward = 0
+        movement_num = 0
         while not done:
+            movement_num += 1
             pc_state, target_points, gripper_points = self.get_pc_state()
             joint_state = self.get_joint_degree()
-            state = self.policy_id.get_feature_for_policy(pc_state, joint_state)
-            dis_embed, conti_latent = self.policy_id.select_action.remote(state)
-            conti_action, state_pre = self.policy_id.cvae.decode(state, dis_embed, conti_latent)
-            dis_action = self.policy_id.select_discrete_action.remote(dis_embed)
-
-            obs = self.env.step(conti_action, config=True, repeat=200)[0]
+            # get action from policy
+            conti_action, discrete_action = ray.get([self.policy_id.select_action.remote(pc_state, joint_state)])[0]
+            conti_action = conti_action.detach().cpu().numpy()[0]
+            conti_action = np.append(conti_action, 0)
+            print(f"conti_action: {conti_action}")
+            print(f"discrete_action: {discrete_action}")
+            obs = self.env.step(conti_action, delta=True, config=True, repeat=200)[0]
             next_pc_state, next_target_points, next_gripper_points = self.get_pc_state()
             next_joint_state = self.get_joint_degree()
-            if dis_action == 1:
+            if movement_num > 20:
+                break
+            if discrete_action == 1:
                 """
                 try to lift the target object
                 """
-                cur_joint = np.array(self._panda.getJointStates()[0])
+                cur_joint = np.array(self.env._panda.getJointStates()[0])
                 cur_joint[-1] = 0.8  # close finger
-                observations = [self.step(cur_joint, repeat=300, config=True, vis=False)[0]]
+                observations = [self.env.step(cur_joint, repeat=300, config=True, vis=False)[0]]
+                # get the pc_state after close the gripper
+                next_pc_state, next_target_points, next_gripper_points = self.get_pc_state()
+
                 done = 1
-                pos, orn = p.getLinkState(self._panda.pandaUid, self._panda.pandaEndEffectorIndex)[4:6]
+                pos, orn = p.getLinkState(self.env._panda.pandaUid, self.env._panda.pandaEndEffectorIndex)[4:6]
 
                 for i in range(10):
                     pos = (pos[0], pos[1], pos[2] + 0.03)
-                    jointPoses = np.array(p.calculateInverseKinematics(self._panda.pandaUid,
+                    jointPoses = np.array(p.calculateInverseKinematics(self.env._panda.pandaUid,
                                                                        self.env._panda.pandaEndEffectorIndex, pos,
                                                                        maxNumIterations=500,
                                                                        residualThreshold=1e-8))
                     jointPoses[6] = 0.8
                     jointPoses = jointPoses[:7].copy()
-                    obs = self.step(jointPoses, config=True)[0]
+                    obs = self.env.step(jointPoses, config=True)[0]
                 if self.env.target_lifted():
                     reward = 1
             else:
                 reward = 0
-            self.buffer_id.add.remote(pc_state, joint_state, conti_action, dis_action, next_pc_state, next_joint_state, reward, done)
+            ray.get([self.online_buffer_id.add.remote(pc_state, joint_state, conti_action[:6], discrete_action, next_pc_state, next_joint_state, reward, done)])
         return reward
 
     def expert_move(self):
@@ -232,23 +241,17 @@ class ActorWrapper(object):
             obs = self.env.step(jointPoses, config=True, repeat=200)[0]
 
             # get next state and done and reward
-            # con_action = jointPoses[:6]
-            con_action = jointPoses[:6] + joint_state  # Literally the next joint state
+            con_action = jointPoses[:6]
+            # con_action = jointPoses[:6] + joint_state
             next_pc_state, next_target_points, next_gripper_points = self.get_pc_state()
             next_joint_state = self.get_joint_degree()
             next_distance = self.get_distance(next_target_points, next_gripper_points)
-            # next_orientation = self.get_orientation(next_gripper_points, next_target_points)
 
             dis_reward = distance - next_distance
-            # ori_reward = next_orientation - orientation
-
-            # print(f"dis_reward: {dis_reward}")
-            # print(f"ori_reward: {ori_reward}")
-            # print("================")
-            reward = dis_reward
+            reward = 0
             done = 0
             ray.get([self.buffer_id.add.remote(pc_state, joint_state, con_action, dis_action, next_pc_state, next_joint_state, reward, done)])
-            
+
         for i in range(2):
             # get the state
             pc_state, target_points, gripper_points = self.get_pc_state()

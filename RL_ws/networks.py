@@ -240,7 +240,7 @@ class ConditionalPredictNetwork(nn.Module):
 
         action_z, mean, log_std = self.encode(state_feat, discrete_emb, conti_action)
         action_recon, state_next = self.decode(state_feat, discrete_emb, action_z, state_pred)
-        return action_recon, state_next, mean, log_std
+        return action_recon, state_next, action_z, mean, log_std
 
     def encode(self, state_feat, discrete_emb, conti_action):
 

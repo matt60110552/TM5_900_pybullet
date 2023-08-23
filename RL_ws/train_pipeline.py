@@ -45,9 +45,10 @@ if __name__ == "__main__":
         timestep = 1
 
         replay_buffer_id = ReplayMemoryWrapper.remote(state_dim=2048, con_action_dim=64)
-        rollout_agent_id = RolloutWrapper012.remote(replay_buffer_id)
-        learner_id = AgentWrapper012.remote(replay_buffer_id)
-        actor_ids = [ActorWrapper012.remote(replay_buffer_id, rollout_agent_id) for _ in range(actor_num)]
+        replay_online_buffer_id = ReplayMemoryWrapper.remote(state_dim=2048, con_action_dim=64)
+        rollout_agent_id = RolloutWrapper012.remote(replay_online_buffer_id, replay_buffer_id)
+        learner_id = AgentWrapper012.remote(replay_online_buffer_id, replay_buffer_id)
+        actor_ids = [ActorWrapper012.remote(replay_online_buffer_id, replay_buffer_id, rollout_agent_id) for _ in range(actor_num)]
         current_file_path = os.path.abspath(__file__).replace('/train_pipeline.py', '/')
         current_datetime = datetime.datetime.now().strftime('%Y-%m-%d_%H')
 
@@ -89,7 +90,7 @@ if __name__ == "__main__":
             roll = []
             roll.extend([actor.rollout_once.remote() for actor in actor_ids])
             roll.extend([learner_id.critic_train.remote(batch_size, timestep)])
-            ray.get(roll)
+            result = ray.get(roll)
             critic_loss, policy_loss = result[-1]
             writer.add_scalar("critic_loss", critic_loss, timestep)
             if policy_loss is not None:
@@ -101,36 +102,31 @@ if __name__ == "__main__":
             timestep += 1
 
     elif args.mode == "Test":
-        # cvae_train_times = args.cvae_train_times
-        # policy_train_times = args.policy_train_times
-        # cvae_save_frequency = args.cvae_save_frequency
-        # policy_save_frequency = args.policy_save_frequency
         ray.init(num_cpus=args.num_cpus)
-        actor_num = 7
-        # batch_size = 40
-        # timestep = 1
+        actor_num = 2
 
         replay_buffer_id = ReplayMemoryWrapper.remote(state_dim=2048, con_action_dim=64)
         rollout_agent_id = RolloutWrapper012.remote(replay_buffer_id)
-        learner_id = AgentWrapper012.remote(replay_buffer_id)
-        actor_ids = [ActorWrapper012.remote(replay_buffer_id, rollout_agent_id) for _ in range(actor_num)]
+        actor_ids = [ActorWrapper012.remote(replay_online_buffer_id, replay_buffer_id, rollout_agent_id, renders=True) for _ in range(actor_num)]
         current_file_path = os.path.abspath(__file__).replace('/train_pipeline.py', '/')
-        formatted_datetime = datetime.datetime.now().strftime('%Y-%m-%d_%H')
-        model_path = os.path.join(current_file_path, 'checkpoints', formatted_datetime)
-        # Create a folder for logs using the formatted datetime
-        log_path = os.path.join(current_file_path, 'logs', formatted_datetime)
+        checkpoint_path = os.path.join(current_file_path, 'checkpoints')
 
-        # Create the directories if they don't exist
-        os.makedirs(model_path, exist_ok=True)
-        os.makedirs(log_path, exist_ok=True)
-
-        # model_path = current_file_path + "checkpoints/"
-        # log_path = current_file_path + "logs/"
-        writer = SummaryWriter(log_path)
         if args.load_filename is not None:
-            ray.get(learner_id.load.remote(model_path + args.load_filename))
-            timestep = ray.get(rollout_agent_id.load.remote(model_path + args.load_filename))
-        # ray.get(learner_id.load.remote(model_path + "2023-08-10 18:56:16.592931policy"))
+            timestep = ray.get(rollout_agent_id.load.remote(checkpoint_path + "/" + args.load_filename))
+
+
+        """
+        Start to use model to move in pybullet
+        """
+        # First to collect data and get the range for z(from policy) to rescale.
+        roll = []
+        roll.extend([actor.rollout_once.remote() for actor in actor_ids])
+        result = ray.get(roll)
+
+        # Use the data above to get the range and then to use policy to interact with env.
+        roll = []
+        roll.extend([actor.rollout_once.remote(expert=False) for actor in actor_ids])
+        result = ray.get(roll)
 
     else:
-        print("please input Train or Test for mode")        
+        print("please input Train or Test for mode")
