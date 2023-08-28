@@ -383,13 +383,16 @@ class SimulatedYCBEnv():
                 o3d.visualization.draw_geometries([pred_pcd] + [axis_pcd])
             obs = (point_state, obs)
         elif raw_data == "obstacle":
+            mask[mask == -1] = 0
+            plane_idx = np.where(mask == 0)  # ignore the floor
             gripper_idx = np.where(mask == 2)  # ignore the gripper's points
             mask[mask >= 0] += 1  # transform mask to have target id 0
             target_idx = self.target_idx + 4
             mask[mask == target_idx] = 0
-            mask[mask == -1] = 50
+
             mask[mask != 0] = 1
             mask[gripper_idx] = 0
+            mask[plane_idx] = 0
             obs = np.concatenate([rgba[..., :3], depth[..., None], mask[..., None]], axis=-1)
             obs = self.process_image(obs[..., :3], obs[..., [3]], obs[..., [4]], tuple(self._resize_img_size))
             inv_mask = np.logical_not(obs[4].T).astype(int)
@@ -726,12 +729,7 @@ class SimulatedYCBEnv():
         else:
             height_weight = self.object_heights[self.target_idx]
             # z_init = .4 + 1.95 * height_weight # original setting by h-chen
-            z_init = .4
-        print(f"xpos: {xpos}")
-        print(f"ypos: {ypos}")
-        print(f"z_init: {z_init}")
-        print(f"self._objectUids[self.target_idx]: {self._objectUids[self.target_idx]}")
-        print(f"height_weight: {height_weight}")
+            z_init = .45
         orn = p.getQuaternionFromEuler([x_rot, 0, np.random.uniform(-np.pi, np.pi)])
         p.resetBasePositionAndOrientation(self._objectUids[self.target_idx],
                                           [xpos, ypos,  z_init], [orn[0], orn[1], orn[2], orn[3]])

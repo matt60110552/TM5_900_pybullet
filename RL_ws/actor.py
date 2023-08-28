@@ -45,16 +45,18 @@ class ActorWrapper(object):
         self.target_points = None   # This is for merging point-cloud from different time
         self.obstacle_points = None
 
-    def rollout_once(self, expert=True):
+    def rollout_once(self, mode="expert"):
         start = time.time()
         self.env.reset(save=False, enforce_face_target=False, reset_free=True)
-        if expert is True:
+        if mode == "expert":
             rewards = self.expert_move()
-        else:
+        elif mode == "onpolicy":
             """
             Use actor to react to the state
             """
             rewards = self.policy_move()
+        elif mode == "both":
+            rewards = self.policy_move() if random.random() < 0.5 else self.expert_move()
 
         duration = time.time() - start
         print(f"actor duration: {duration}")
@@ -151,7 +153,7 @@ class ActorWrapper(object):
         movement_num = 0
         while not done:
             movement_num += 1
-            pc_state, target_points, gripper_points = self.get_pc_state()
+            pc_state, target_points, obstacle_points, gripper_points = self.get_pc_state()
             joint_state = self.get_joint_degree()
             # get action from policy
             conti_action, discrete_action = ray.get([self.policy_id.select_action.remote(pc_state, joint_state)])[0]
@@ -160,9 +162,10 @@ class ActorWrapper(object):
             print(f"conti_action: {conti_action}")
             print(f"discrete_action: {discrete_action}")
             obs = self.env.step(conti_action, delta=True, config=True, repeat=200)[0]
-            next_pc_state, next_target_points, next_gripper_points = self.get_pc_state()
+            next_pc_state, next_target_points, next_obstacle_points, next_gripper_points = self.get_pc_state()
             next_joint_state = self.get_joint_degree()
-            if movement_num > 20:
+            if movement_num > 25:
+                reward = 0
                 break
             if discrete_action == 1:
                 """
@@ -172,7 +175,7 @@ class ActorWrapper(object):
                 cur_joint[-1] = 0.8  # close finger
                 observations = [self.env.step(cur_joint, repeat=300, config=True, vis=False)[0]]
                 # get the pc_state after close the gripper
-                next_pc_state, next_target_points, next_gripper_points = self.get_pc_state()
+                next_pc_state, next_target_points, next_obstacle_points, next_gripper_points = self.get_pc_state()
 
                 done = 1
                 pos, orn = p.getLinkState(self.env._panda.pandaUid, self.env._panda.pandaEndEffectorIndex)[4:6]
@@ -221,11 +224,12 @@ class ActorWrapper(object):
 
         for i in range(len(path)):
             # get the state
-            pc_state, target_points, gripper_points = self.get_pc_state()
+            pc_state, target_points, obstacle_points, gripper_points = self.get_pc_state()
             # print(f"length of target_points: {target_points.shape}")
-            if target_points.shape[0] == 0:
+            if target_points is None:
                 # print(f"target_points.shape[0]: {target_points.shape[0]}")
                 # print(f"no target points!!!")
+                print(f"targe_name: {self.env.target_name}")
                 p.removeConstraint(fixed_joint_constraint)
                 self.env.place_back_objects()
                 return 0
@@ -243,7 +247,7 @@ class ActorWrapper(object):
             # get next state and done and reward
             con_action = jointPoses[:6]
             # con_action = jointPoses[:6] + joint_state
-            next_pc_state, next_target_points, next_gripper_points = self.get_pc_state()
+            next_pc_state, next_target_points, next_obstacle_points, next_gripper_points = self.get_pc_state()
             next_joint_state = self.get_joint_degree()
             next_distance = self.get_distance(next_target_points, next_gripper_points)
 
@@ -252,16 +256,23 @@ class ActorWrapper(object):
             done = 0
             ray.get([self.buffer_id.add.remote(pc_state, joint_state, con_action, dis_action, next_pc_state, next_joint_state, reward, done)])
 
+            # check for pointcloud
+            # vis_pc = pc_state[:, :3]
+            # point_cloud = o3d.geometry.PointCloud()
+            # point_cloud.points = o3d.utility.Vector3dVector(vis_pc)
+            # axis_pcd = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
+            # o3d.visualization.draw_geometries([point_cloud] + [axis_pcd])
+
         for i in range(2):
             # get the state
-            pc_state, target_points, gripper_points = self.get_pc_state()
+            pc_state, target_points, obstacle_points, gripper_points = self.get_pc_state()
             joint_state = self.get_joint_degree()
             dis_action = 0
 
             self.env.step(action=np.array([0, 0, 0.015, 0, 0, 0]))
 
             # get next state and done and reward
-            next_pc_state, next_target_points, next_gripper_points = self.get_pc_state()
+            next_pc_state, next_target_points, next_obstacle_points, next_gripper_points = self.get_pc_state()
             next_joint_state = self.get_joint_degree()
             con_action = next_joint_state - joint_state
             reward = 0
@@ -294,6 +305,8 @@ class ActorWrapper(object):
         # transform the pointcloud from camera back to world frame
         pointcloud_tar = np.hstack((pointcloud.T, np.ones((len(pointcloud.T), 1)))).T
         target_points = (np.dot(ef_pose, self.env.cam_offset.dot(pointcloud_tar)).T)[:, :3]
+        if len(target_points) == 0:
+            return None
         if raw_data is True or raw_data == "obstacle":
             target_points = regularize_pc_point_count(target_points, 1021)
         return target_points
@@ -311,9 +324,14 @@ class ActorWrapper(object):
         """
         obstacle_points = self.get_world_pointcloud(raw_data="obstacle")
         target_points = self.get_world_pointcloud(raw_data=False)
+
+        # prevent the condition that not enough points are observed
+        if obstacle_points is None and self.obstacle_points is not None:
+            obstacle_points = self.obstacle_points
+        if target_points is None and self.target_points is not None:
+            target_points = self.target_points
+
         if self.target_points is not None and self.obstacle_points is not None:
-            # print(f"self.target_points: {self.target_points.shape}")
-            # print(f"self.obstacle_points: {self.obstacle_points.shape}")
             target_points = regularize_pc_point_count(np.vstack((target_points, self.target_points)), 1024)
             obstacle_points = regularize_pc_point_count(np.vstack((obstacle_points, self.obstacle_points)), 1021)
         self.target_points = target_points
@@ -326,12 +344,18 @@ class ActorWrapper(object):
             axis_pcd = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
             o3d.visualization.draw_geometries([obstacle_o3d_pc]+[target_o3d_pc]+[axis_pcd])
 
+        # print(f"target_points: {type(target_points)}")
+        # print(f"obstacle_points: {type(obstacle_points)}")
+        # print(f"self.target_points: {type(self.target_points)}")
+        # print(f"self.obstacle_points: {type(self.obstacle_points)}")
+        if target_points is None or obstacle_points is None:
+            return None, None, None, None
         obstacle_points = np.hstack((obstacle_points, np.zeros((obstacle_points.shape[0], 1))))
         target_points = np.hstack((target_points, np.ones((target_points.shape[0], 1))))
         # print(f"in get_pc_state, target_points.shape: {target_points.shape}")
         scene_points = np.vstack((obstacle_points, target_points))
         all_pc, gripper_points = self.get_gripper_points(scene_points)
-        return all_pc, target_points, gripper_points
+        return all_pc, target_points, obstacle_points, gripper_points
 
     def get_distance(self, source_cloud, target_cloud):
         # Expand dimensions to enable broadcasting

@@ -6,7 +6,7 @@ import random
 
 
 class ReplayBuffer(object):
-    def __init__(self, state_dim, joint_state_dim=6, con_action_dim=6, dis_action_dim=1, max_size=int(1e5)):
+    def __init__(self, state_dim, joint_state_dim=6, con_action_dim=6, dis_action_dim=1, max_size=int(1e2)):
         self.max_size = max_size
         self.size = 0
 

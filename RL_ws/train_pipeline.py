@@ -19,10 +19,11 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Paper: https://arxiv.org/abs/1802.09477
 
 parser = argparse.ArgumentParser(description="Description of your script.")
-parser.add_argument("--cvae_train_times", type=int, default=1000, help="How many time should cvae train")
-parser.add_argument("--policy_train_times", type=int, default=1000, help="How many time should cvae and policy train")
-parser.add_argument("--cvae_save_frequency", type=int, default=500, help="How many steps cvae take to save once")
-parser.add_argument("--policy_save_frequency", type=int, default=500, help="How many steps policy take to save once")
+parser.add_argument("--cvae_train_times", type=int, default=3000, help="How many time should cvae train")
+parser.add_argument("--policy_train_times", type=int, default=500, help="How many time should cvae and policy train")
+parser.add_argument("--cvae_save_frequency", type=int, default=250, help="How many steps cvae take to save once")
+parser.add_argument("--policy_save_frequency", type=int, default=250, help="How many steps policy take to save once")
+parser.add_argument("--warmup_times", type=int, default=1, help="times for collecting data only")
 parser.add_argument("--log_dir", type=str, default="RL_ws/logs", help="where is the record")
 parser.add_argument("--load_filename", type=str, default=None, help="The name of load file")
 parser.add_argument("--mode", type=str, default="Train", help="Test or Train")
@@ -46,9 +47,9 @@ if __name__ == "__main__":
 
         replay_buffer_id = ReplayMemoryWrapper.remote(state_dim=2048, con_action_dim=64)
         replay_online_buffer_id = ReplayMemoryWrapper.remote(state_dim=2048, con_action_dim=64)
-        rollout_agent_id = RolloutWrapper012.remote(replay_online_buffer_id, replay_buffer_id)
+        rollout_agent_id = RolloutWrapper012.remote(replay_online_buffer_id, replay_buffer_id, train=False)
         learner_id = AgentWrapper012.remote(replay_online_buffer_id, replay_buffer_id)
-        actor_ids = [ActorWrapper012.remote(replay_online_buffer_id, replay_buffer_id, rollout_agent_id) for _ in range(actor_num)]
+        actor_ids = [ActorWrapper012.remote(replay_online_buffer_id, replay_buffer_id, rollout_agent_id, renders=True) for _ in range(actor_num)]
         current_file_path = os.path.abspath(__file__).replace('/train_pipeline.py', '/')
         current_datetime = datetime.datetime.now().strftime('%Y-%m-%d_%H')
 
@@ -71,7 +72,9 @@ if __name__ == "__main__":
         # log_path = current_file_path + "logs/"
         writer = SummaryWriter(save_log_path)
 
-        ray.get([actor.rollout_once.remote() for actor in actor_ids])
+        for _ in range(args.warmup_times):
+            ray.get([actor.rollout_once.remote() for actor in actor_ids])
+
         for _ in range(cvae_train_times):
             roll = []
             roll.extend([actor.rollout_once.remote() for actor in actor_ids])
@@ -86,27 +89,40 @@ if __name__ == "__main__":
                 ray.get([learner_id.save.remote(filename, timestep)])
             timestep += 1
         print(f"cvae finished!!!", end="\n\n")
-        for _ in range(policy_train_times):
+        weight = ray.get([learner_id.get_weight.remote()])[0]
+
+        for _ in range(args.warmup_times):
+            ray.get([actor.rollout_once.remote(mode="onpolicy") for actor in actor_ids])
+
+        for i in range(policy_train_times):
+            # first half of the policy_train_times use all expert data, and then the ratio keeps going up
+            ratio = 0 if i < policy_train_times // 2 else int((i - (policy_train_times // 2)) / (policy_train_times // 2))
+            print(f"ratio: {ratio}")
             roll = []
-            roll.extend([actor.rollout_once.remote() for actor in actor_ids])
-            roll.extend([learner_id.critic_train.remote(batch_size, timestep)])
+            roll.extend([actor.rollout_once.remote(mode="both") for actor in actor_ids])
+            roll.extend([learner_id.critic_train.remote(batch_size, timestep, ratio=ratio)])
+            roll.extend([rollout_agent_id.load.remote(weight, dict=True)])
+            roll.extend([learner_id.get_weight.remote()])
             result = ray.get(roll)
-            critic_loss, policy_loss = result[-1]
+            critic_loss, policy_loss, bc_loss, terminal_loss = result[-3]
+            weight = result[-1][0]
             writer.add_scalar("critic_loss", critic_loss, timestep)
             if policy_loss is not None:
                 writer.add_scalar("policy_loss", policy_loss, timestep)
-
+                writer.add_scalar("bc_loss", bc_loss, timestep)
+                writer.add_scalar("terminal_loss", terminal_loss, timestep)
             if timestep % policy_save_frequency == 0:
-                filename = save_checkpoint_path + "/cvae_" + str(cvae_train_times) + "policy_" + str(timestep-cvae_train_times)
+                filename = save_checkpoint_path + "/cvae_" + str(cvae_train_times) + "policy_" + str(timestep - cvae_train_times)
                 ray.get([learner_id.save.remote(filename, timestep)])
             timestep += 1
 
     elif args.mode == "Test":
         ray.init(num_cpus=args.num_cpus)
-        actor_num = 2
+        actor_num = args.actor_num
 
         replay_buffer_id = ReplayMemoryWrapper.remote(state_dim=2048, con_action_dim=64)
-        rollout_agent_id = RolloutWrapper012.remote(replay_buffer_id)
+        replay_online_buffer_id = ReplayMemoryWrapper.remote(state_dim=2048, con_action_dim=64)
+        rollout_agent_id = RolloutWrapper012.remote(replay_online_buffer_id, replay_buffer_id, train=False)
         actor_ids = [ActorWrapper012.remote(replay_online_buffer_id, replay_buffer_id, rollout_agent_id, renders=True) for _ in range(actor_num)]
         current_file_path = os.path.abspath(__file__).replace('/train_pipeline.py', '/')
         checkpoint_path = os.path.join(current_file_path, 'checkpoints')
@@ -119,13 +135,14 @@ if __name__ == "__main__":
         Start to use model to move in pybullet
         """
         # First to collect data and get the range for z(from policy) to rescale.
-        roll = []
-        roll.extend([actor.rollout_once.remote() for actor in actor_ids])
-        result = ray.get(roll)
+        for _ in range(2):
+            roll = []
+            roll.extend([actor.rollout_once.remote() for actor in actor_ids])
+            result = ray.get(roll)
 
         # Use the data above to get the range and then to use policy to interact with env.
         roll = []
-        roll.extend([actor.rollout_once.remote(expert=False) for actor in actor_ids])
+        roll.extend([actor.rollout_once.remote(mode="inference") for actor in actor_ids])
         result = ray.get(roll)
 
     else:
