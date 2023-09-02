@@ -214,7 +214,8 @@ class ConditionalPredictNetwork(nn.Module):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         init_tensor = torch.rand(2, latent_size) * 2 - 1  # Don't initialize near the extremes.
         self.emb_table = torch.nn.Parameter(init_tensor.type(torch.float32), requires_grad=True)
-        self.max_joint_limit = np.array([4.712385, 3.14159, 3.14159,  3.14159,  3.14159,  4.712385])  # min_limit has same value with negative    
+        # self.max_joint_limit = np.array([4.712385, 3.14159, 3.14159,  3.14159,  3.14159,  4.712385])  # min_limit has same value with negative
+        self.max_joint_limit = np.array([0.2, 0.2, 0.2, 0.2, 0.2, 0.2])  # min_limit has same value with negative
 
         # Encoder
         # Input size is 576(512 for point, 64 for joint) plus 64(discrete action)
