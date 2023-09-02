@@ -47,15 +47,15 @@ docker run \
     -e DISPLAY=$DISPLAY \
     -e QT_X11_NO_MITSHM=1 \
     -e XAUTHORITY=$XAUTH \
-    -v "/home/$user/TM5_900_pybullet:/home/user/TM5_900_pybullet" \
+    -v "/home/$user/RL_TM5_900_pybullet:/home/user/RL_TM5_900_pybullet" \
     -v "$XAUTH:$XAUTH" \
     -v "/tmp/.X11-unix:/tmp/.X11-unix" \
     -v "/etc/localtime:/etc/localtime:ro" \
     --user "root:root" \
-    --name tm5_pybullet \
+    --name rl_tm5_pybullet \
     --network host \
     --privileged \
     --security-opt seccomp=unconfined \
     $DOCKER_OPTS \
-    iscilab/tm5-pybullet:cuda-20-04 \
+    iscilab/rl_tm5-pybullet:cuda-20-04 \
     $BASH_OPTION
