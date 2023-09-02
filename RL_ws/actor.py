@@ -55,6 +55,7 @@ class ActorWrapper(object):
             Use actor to react to the state
             """
             rewards = self.policy_move()
+            # rewards = self.policy_move(vis=True)
         elif mode == "both":
             rewards = self.policy_move() if random.random() < 0.5 else self.expert_move()
 
@@ -147,7 +148,7 @@ class ActorWrapper(object):
 
         return planer_path
 
-    def policy_move(self):
+    def policy_move(self, vis=False):
         done = 0
         reward = 0
         movement_num = 0
@@ -157,13 +158,23 @@ class ActorWrapper(object):
             joint_state = self.get_joint_degree()
             # get action from policy
             conti_action, discrete_action = ray.get([self.policy_id.select_action.remote(pc_state, joint_state)])[0]
-            conti_action = conti_action.detach().cpu().numpy()[0]
             conti_action = np.append(conti_action, 0)
             print(f"conti_action: {conti_action}")
             print(f"discrete_action: {discrete_action}")
             obs = self.env.step(conti_action, delta=True, config=True, repeat=200)[0]
             next_pc_state, next_target_points, next_obstacle_points, next_gripper_points = self.get_pc_state()
             next_joint_state = self.get_joint_degree()
+
+            # set discrete_action to 0 when testing the continue action
+            discrete_action = 0
+
+            if vis:
+                vis_pc = next_pc_state[:, :3]
+                point_cloud = o3d.geometry.PointCloud()
+                point_cloud.points = o3d.utility.Vector3dVector(vis_pc)
+                axis_pcd = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
+                o3d.visualization.draw_geometries([point_cloud] + [axis_pcd])
+
             if movement_num > 25:
                 reward = 0
                 break
@@ -236,8 +247,8 @@ class ActorWrapper(object):
             joint_state = self.get_joint_degree()
             dis_action = 0
             distance = self.get_distance(target_points, gripper_points)
-            # orientation = self.get_orientation(gripper_points, target_points)
-
+            orientation = self.get_orientation(gripper_points, target_points)
+            print(f"orientation: {orientation}")
             next_pos = path[i]
             jointPoses = self.env._panda.solveInverseKinematics(next_pos[:3], ros_quat(next_pos[3:]))
             jointPoses[6] = 0
@@ -245,13 +256,15 @@ class ActorWrapper(object):
             obs = self.env.step(jointPoses, config=True, repeat=200)[0]
 
             # get next state and done and reward
-            con_action = jointPoses[:6]
-            # con_action = jointPoses[:6] + joint_state
             next_pc_state, next_target_points, next_obstacle_points, next_gripper_points = self.get_pc_state()
             next_joint_state = self.get_joint_degree()
             next_distance = self.get_distance(next_target_points, next_gripper_points)
-
+            con_action = next_joint_state - joint_state
+            # print(f"move distance: {np.linalg.norm(next_gripper_points - gripper_points)}")
+            # print(f"con_action: {con_action}")
             dis_reward = distance - next_distance
+            # print(f"dis_reward: {dis_reward}")
+            # reward = 0 if np.linalg.norm(next_gripper_points - gripper_points) < 0.045 else -0.1
             reward = 0
             done = 0
             ray.get([self.buffer_id.add.remote(pc_state, joint_state, con_action, dis_action, next_pc_state, next_joint_state, reward, done)])
@@ -325,15 +338,33 @@ class ActorWrapper(object):
         obstacle_points = self.get_world_pointcloud(raw_data="obstacle")
         target_points = self.get_world_pointcloud(raw_data=False)
 
-        # prevent the condition that not enough points are observed
-        if obstacle_points is None and self.obstacle_points is not None:
-            obstacle_points = self.obstacle_points
-        if target_points is None and self.target_points is not None:
-            target_points = self.target_points
+        # # prevent the condition that not enough points are observed
+        # if obstacle_points is None and self.obstacle_points is not None:
+        #     obstacle_points = self.obstacle_points
+        # if target_points is None and self.target_points is not None:
+        #     target_points = self.target_points
+        # print(f"obstacle_points: {obstacle_points.shape}")
+        # print(f"target_points: {target_points.shape}")
+        # print(f"self.obstacle_points: {self.obstacle_points.shape}")
+        # print(f"self.target_points: {self.target_points.shape}")
 
-        if self.target_points is not None and self.obstacle_points is not None:
-            target_points = regularize_pc_point_count(np.vstack((target_points, self.target_points)), 1024)
-            obstacle_points = regularize_pc_point_count(np.vstack((obstacle_points, self.obstacle_points)), 1021)
+        # deal with target points, combine them with previous points if exist, or overwrite it with preious if None
+        if self.target_points is None:
+            self.target_points = target_points
+        else:
+            if target_points is None:
+                target_points = self.target_points
+            else:
+                target_points = regularize_pc_point_count(np.vstack((target_points, self.target_points)), 1024)
+        # deal with obstacle points, combine them with previous points if exist, or overwrite it with preious if None
+        if self.obstacle_points is None:
+            self.obstacle_points = obstacle_points
+        else:
+            if obstacle_points is None:
+                obstacle_points = self.obstacle_points
+            else:
+                obstacle_points = regularize_pc_point_count(np.vstack((obstacle_points, self.obstacle_points)), 1021)
+
         self.target_points = target_points
         self.obstacle_points = obstacle_points
         if vis:
@@ -344,10 +375,6 @@ class ActorWrapper(object):
             axis_pcd = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
             o3d.visualization.draw_geometries([obstacle_o3d_pc]+[target_o3d_pc]+[axis_pcd])
 
-        # print(f"target_points: {type(target_points)}")
-        # print(f"obstacle_points: {type(obstacle_points)}")
-        # print(f"self.target_points: {type(self.target_points)}")
-        # print(f"self.obstacle_points: {type(self.obstacle_points)}")
         if target_points is None or obstacle_points is None:
             return None, None, None, None
         obstacle_points = np.hstack((obstacle_points, np.zeros((obstacle_points.shape[0], 1))))
@@ -375,9 +402,10 @@ class ActorWrapper(object):
 
     def get_orientation(self, gripper_points, target_points):
         # Extract the individual gripper points
-        gripper_left = gripper_points[0]
-        gripper_right = gripper_points[1]
-        gripper_back = gripper_points[2]
+        gripper_left = gripper_points[0, :3]
+        gripper_right = gripper_points[1, :3]
+        gripper_back = gripper_points[2, :3]
+        target_points = target_points[:, :3]
 
         # Calculate the middle point between the left and right gripper points
         gripper_middle = (gripper_left + gripper_right) / 2.0
@@ -392,7 +420,7 @@ class ActorWrapper(object):
         target_vector = target_vector / np.linalg.norm(target_vector)
         # Calculate the dot product between the gripper vector and the target vector
         dot_product = np.dot(gripper_vector, target_vector)
-        print(f"dot_product: {dot_product}")
+        # print(f"dot_product: {dot_product}")
         return dot_product
 
 
