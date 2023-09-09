@@ -22,7 +22,7 @@ parser = argparse.ArgumentParser(description="Description of your script.")
 parser.add_argument("--cvae_train_times", type=int, default=3000, help="How many time should cvae train")
 parser.add_argument("--policy_train_times", type=int, default=3000, help="How many time should cvae and policy train")
 parser.add_argument("--cvae_save_frequency", type=int, default=100, help="How many steps cvae take to save once")
-parser.add_argument("--policy_save_frequency", type=int, default=100, help="How many steps policy take to save once")
+parser.add_argument("--policy_save_frequency", type=int, default=50, help="How many steps policy take to save once")
 parser.add_argument("--buffer_save_frequency", type=int, default=100, help="How many steps buffer take to save once")
 parser.add_argument("--warmup_times", type=int, default=1, help="times for collecting data only")
 parser.add_argument("--log_dir", type=str, default="RL_ws/logs", help="where is the record")
@@ -116,7 +116,7 @@ if __name__ == "__main__":
 
         for i in range(policy_train_times):
             # first half of the policy_train_times use all expert data, and then the ratio keeps going up
-            ratio = 0 if i < policy_train_times // 2 else int((i - (policy_train_times // 2)) / (policy_train_times // 2))
+            ratio = 0 if i < policy_train_times // 2 else int((i - (policy_train_times // 2)) / max((policy_train_times // 2), 1))
 
             roll = []
             roll.extend([actor.rollout_once.remote(mode="both") for actor in actor_ids])
