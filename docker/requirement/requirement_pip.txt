@@ -22,6 +22,7 @@ trimesh==3.9.36
 opencv-contrib-python==4.1.2.30
 IPython
 matplotlib
+scikit-learn
 easydict
 cmake
 future
