@@ -46,13 +46,14 @@ def weights_init_(m):
 
 class PointNetFeature(nn.Module):
     def __init__(
-        self
+        self,
+        points=2048
     ):
         super(PointNetFeature, self).__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         # self.point_encoder = EncP(in_channels=4, input_points=2048, num_stages=4, embed_dim=36, k_neighbors=40, beta=100, alpha=1000, LGA_block=[2,1,1,1], dim_expansion=[2,2,2,1], type='mn40')
         # self.linear_out = torch.nn.Linear(288, 512)
-        self.point_encoder = pointMLPElite(points=2048, in_channel=4, feature_dim=512)
+        self.point_encoder = pointMLPElite(points=points, in_channel=4, feature_dim=512)
         self.point_encoder.apply(weights_init_)
 
     def forward(
@@ -109,12 +110,13 @@ class JointFeature(nn.Module):
 
 class Feature_extractor(nn.Module):
     def __init__(
-        self
+        self,
+        points=2048
     ):
         super(Feature_extractor, self).__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.jointextractor = JointFeature()
-        self.pointextractor = PointNetFeature()
+        self.pointextractor = PointNetFeature(points=points)
 
     def forward(self, pc, joint):
 
