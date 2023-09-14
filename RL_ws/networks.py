@@ -7,7 +7,6 @@ from torch import nn
 import IPython
 import numpy as np
 import sys
-from Point_NN.models.point_pn import EncP
 from pointmlp import pointMLPElite
 
 
