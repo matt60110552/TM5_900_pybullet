@@ -31,8 +31,9 @@ parser.add_argument("--mode", type=str, default="Train", help="Test or Train")
 parser.add_argument("--num_cpus", type=int, default=12, help="number of cpus")
 parser.add_argument("--actor_num", type=int, default=7, help="number of actors")
 parser.add_argument("--batch_size", type=int, default=40, help="number of batch_size")
-parser.add_argument("--visual", type=bool, default=False, help="visualize or not")
-parser.add_argument("--load_memory", type=bool, default=True, help="load data or not")
+parser.add_argument("--visual", type=int, default=0, help="visualize or not")
+parser.add_argument("--load_memory", type=int, default=1, help="load data or not")
+parser.add_argument("--scene_level", type=int, default=1, help="convet to 0 if use target points only(object level)")
 
 
 if __name__ == "__main__":
@@ -46,24 +47,27 @@ if __name__ == "__main__":
         buffer_save_frequency = args.buffer_save_frequency
         visual = args.visual
         load_memory = args.load_memory
-        ray.init(num_cpus=args.num_cpus)
         actor_num = args.actor_num
         batch_size = args.batch_size
-        timestep = 1
+        scene_level = bool(args.scene_level)
+        ray.init(num_cpus=args.num_cpus)
 
+        timestep = 1
         replay_buffer_id = ReplayMemoryWrapper.remote(state_dim=2048, con_action_dim=64)
         replay_online_buffer_id = ReplayMemoryWrapper.remote(state_dim=2048, con_action_dim=64)
-        rollout_agent_id = RolloutWrapper012.remote(replay_online_buffer_id, replay_buffer_id, train=False)
-        learner_id = AgentWrapper012.remote(replay_online_buffer_id, replay_buffer_id)
-        actor_ids = [ActorWrapper012.remote(replay_online_buffer_id, replay_buffer_id, rollout_agent_id, renders=visual) for _ in range(actor_num)]
+        rollout_agent_id = RolloutWrapper012.remote(replay_online_buffer_id, replay_buffer_id,
+                                                    train=False, scene_level=scene_level, batch_size=batch_size)
+        learner_id = AgentWrapper012.remote(replay_online_buffer_id, replay_buffer_id, scene_level=scene_level,
+                                            batch_size=batch_size)
+        actor_ids = [ActorWrapper012.remote(replay_online_buffer_id, replay_buffer_id, rollout_agent_id,
+                                            renders=visual, scene_level=scene_level) for _ in range(actor_num)]
         current_file_path = os.path.abspath(__file__).replace('/train_pipeline.py', '/')
         current_datetime = datetime.datetime.now().strftime('%Y-%m-%d_%H')
 
         checkpoint_path = os.path.join(current_file_path, 'checkpoints')
         # Create a folder for logs using the formatted datetime
         log_path = os.path.join(current_file_path, 'logs')
-        npz_data_path = os.path.join(current_file_path, 'npz_data')
-
+        npz_data_path = os.path.join(current_file_path, 'npz_data/scene_level') if scene_level else os.path.join(current_file_path, 'npz_data/object_level')
         # load model test
         if args.load_filename is not None:
             ray.get(learner_id.load.remote(checkpoint_path + "/" + args.load_filename))
@@ -111,13 +115,17 @@ if __name__ == "__main__":
         print(f"cvae finished!!!", end="\n\n")
         weight = ray.get([learner_id.get_weight.remote()])[0]
 
+        # assign the median and offset of the rollout_agent
+        ray.get([rollout_agent_id.get_median_offset.remote(batch_size)])
+        ray.get([learner_id.get_median_offset.remote(batch_size)])
+
         for _ in range(args.warmup_times):
             ray.get([actor.rollout_once.remote(mode="onpolicy") for actor in actor_ids])
 
         for i in range(policy_train_times):
             # first half of the policy_train_times use all expert data, and then the ratio keeps going up
-            ratio = 0 if i < policy_train_times // 2 else int((i - (policy_train_times // 2)) / max((policy_train_times // 2), 1))
-
+            # ratio = 0 if i < policy_train_times // 2 else int((i - (policy_train_times // 2)) / max((policy_train_times // 2), 1))
+            ratio = 0.5
             roll = []
             roll.extend([actor.rollout_once.remote(mode="both") for actor in actor_ids])
             roll.extend([learner_id.critic_train.remote(batch_size, timestep, ratio=ratio)])
@@ -145,14 +153,18 @@ if __name__ == "__main__":
         ray.init(num_cpus=args.num_cpus)
         actor_num = args.actor_num
         load_memory = args.load_memory
-
+        scene_level = args.scene_level
+        batch_size = args.batch_size
         replay_buffer_id = ReplayMemoryWrapper.remote(state_dim=2048, con_action_dim=64)
         replay_online_buffer_id = ReplayMemoryWrapper.remote(state_dim=2048, con_action_dim=64)
-        rollout_agent_id = RolloutWrapper012.remote(replay_online_buffer_id, replay_buffer_id, train=False)
-        actor_ids = [ActorWrapper012.remote(replay_online_buffer_id, replay_buffer_id, rollout_agent_id, renders=True) for _ in range(actor_num)]
+        rollout_agent_id = RolloutWrapper012.remote(replay_online_buffer_id, replay_buffer_id, train=False,
+                                                    scene_level=scene_level)
+        actor_ids = [ActorWrapper012.remote(replay_online_buffer_id, replay_buffer_id, rollout_agent_id,
+                                            renders=True, scene_level=scene_level) for _ in range(actor_num)]
         current_file_path = os.path.abspath(__file__).replace('/train_pipeline.py', '/')
         checkpoint_path = os.path.join(current_file_path, 'checkpoints')
-        npz_data_path = os.path.join(current_file_path, 'npz_data')
+        # npz_data_path = os.path.join(current_file_path, 'npz_data')
+        npz_data_path = os.path.join(current_file_path, 'npz_data/scene_level') if scene_level else os.path.join(current_file_path, 'npz_data/object_level')
 
         if args.load_filename is not None:
             timestep = ray.get(rollout_agent_id.load.remote(checkpoint_path + "/" + args.load_filename))
@@ -166,6 +178,9 @@ if __name__ == "__main__":
                 roll.extend([replay_buffer_id.load_data.remote(npz_data_path + "/" + "expert.npz")])
                 roll.extend([replay_online_buffer_id.load_data.remote(npz_data_path + "/" + "on_policy.npz")])
                 ray.get(roll)
+
+        # # assign the median and offset of the rollout_agent
+        # ray.get([rollout_agent_id.get_median_offset.remote(batch_size)])
 
         """
         Start to use model to move in pybullet
