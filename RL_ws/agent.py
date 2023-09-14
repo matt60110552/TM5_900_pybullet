@@ -11,7 +11,6 @@ import ray
 import sys
 import time
 import datetime
-from chamferdist import ChamferDistance
 from networks import Feature_extractor, GaussianPolicy, ConditionalPredictNetwork, QNetwork
 from actor import ActorWrapper012
 from replay_buffer import ReplayBuffer
