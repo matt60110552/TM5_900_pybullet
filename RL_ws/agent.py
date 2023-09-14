@@ -11,6 +11,7 @@ import ray
 import sys
 import time
 import datetime
+from chamferdist import ChamferDistance
 from networks import Feature_extractor, GaussianPolicy, ConditionalPredictNetwork, QNetwork
 from actor import ActorWrapper012
 from replay_buffer import ReplayBuffer
@@ -18,19 +19,20 @@ from pid import PIDControl
 
 
 class AgentWrapper(object):
-    def __init__(self, online_replay_buffer_id, replay_buffer_id, train=True):
+    def __init__(self, online_replay_buffer_id, replay_buffer_id, train=True, scene_level=True, batch_size=40):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.cvae, self.cvae_optim, self.cvae_scheduler = self.get_cvae()
         self.policy, self.policy_optim, self.policy_scheduler = self.get_policy()
         self.critic, self.critic_optim, self.critic_scheduler = self.get_critic()
         self.policy_target, _, _ = self.get_policy()
         self.critic_target, _, _ = self.get_critic()
-        self.policy_feat_extractor, self.policy_feat_extractor_optim = self.get_feature_extractor()
-        self.encoder_feat_extractor, self.encoder_feat_extractor_optim = self.get_feature_extractor()
+        self.policy_feat_extractor, self.policy_feat_extractor_optim = self.get_feature_extractor(scene_level)
+        self.encoder_feat_extractor, self.encoder_feat_extractor_optim = self.get_feature_extractor(scene_level)
         self.offline_collect_times = 0  # How many episode should each actor to run for collecting the offline data
         self.offline_train_times = 0
         self.replay_buffer_id = replay_buffer_id
         self.online_replay_buffer_id = online_replay_buffer_id
+        self.batch_size = batch_size
         self.PIDControl = PIDControl()
 
         if not train:
@@ -67,7 +69,6 @@ class AgentWrapper(object):
             self.joint_state = self.prepare_data(joint_state).unsqueeze(0)
             all_state = self.get_feature_for_policy(self.pc_state, self.joint_state)
 
-            self.get_median_offset(batch_size=40)  # update self.median and self.offset
             dis_emb, conti_emb = self.policy(all_state)
 
             conti_para = self.rescale_to_new_crange(conti_emb)
@@ -116,8 +117,9 @@ class AgentWrapper(object):
         )
         return critic, critic_optim, critic_scheduler
 
-    def get_feature_extractor(self):
-        extractor = Feature_extractor()
+    def get_feature_extractor(self, scene_level=True):
+        points = 2048 if scene_level else 1024
+        extractor = Feature_extractor(points=points)
         extractor.to(self.device)
         extractor_optim = optim.Adam(
             extractor.parameters(), lr=1e-4, eps=1e-5, weight_decay=1e-5)
@@ -229,13 +231,13 @@ class AgentWrapper(object):
 
             con_recon_loss = F.mse_loss(self.conti_action, self.action_recon)
             # print(f"(conti_action: {self.conti_action} action_recon: {self.action_recon}")
-            print(f"mean: {self.mean}, log_std: {self.log_std}")
+            # print(f"mean: {self.mean}, log_std: {self.log_std}")
             kl_loss = self.kl_divergence_loss(self.mean, self.log_std)
             gripper_pre_loss = F.mse_loss(self.next_pc_state[:, -3:, :3], self.gripper_next)
 
             self.beta, _ = self.PIDControl.pid(20, kl_loss.item(), Kp=0.01, Ki=(-0.0001), Kd=0.0)
-            print(f"beta: {self.beta}")
-            print(f"kl_loss: {kl_loss.item()}")
+            # print(f"beta: {self.beta}")
+            # print(f"kl_loss: {kl_loss.item()}")
             total_loss = 5000 * con_recon_loss + self.beta * kl_loss + 1 * gripper_pre_loss
             # total_loss = 1000 * con_recon_loss + self.beta * kl_loss
 
@@ -340,8 +342,6 @@ class AgentWrapper(object):
             self.done = self.prepare_data(done)
 
             with torch.no_grad():
-                # get the median and offset for the rescale process afterward
-                self.get_median_offset(batch_size)  # update the self.median and self.offset
 
                 # get target_q
                 next_policy_feat = self.get_feature_for_policy(self.next_pc_state, self.next_joint_state)
@@ -355,7 +355,7 @@ class AgentWrapper(object):
             dis_parameter_reassign = self.reassign_discrete(self.dis_action, self.dis_embeddings, batch_size)
             self.reassign_continue(self.conti_para, dis_parameter_reassign, feat_encoder,
                                    action_z, self.next_pc_state, batch_size,
-                                   recon_s_rate=0.8)
+                                   recon_s_rate=self.rec_rate)
 
             feat_critic = self.get_feature_for_policy(self.pc_state, self.joint_state)
             current_q1, current_q2, _ = self.critic(feat_critic, self.dis_embeddings, self.conti_para)
@@ -382,7 +382,6 @@ class AgentWrapper(object):
                 # calculate the distance between the reconstruct action and the data's action
                 action_recon, _ = self.cvae.decode(feat_encoder, discrete_emb, conti_para)
                 bc_loss = nn.MSELoss()(action_recon, self.conti_action)
-                terminal_loss = torch.mean(torch.min(self.get_match_scores(discrete_emb), dim=1)[0])
                 # print(f"action_recon: {action_recon}")
                 # print(f"self.conti_action: {self.conti_action}")
 
@@ -390,9 +389,12 @@ class AgentWrapper(object):
                 q1, q2, _ = self.critic(feat_policy, discrete_emb, continue_emb)
                 policy_loss = -torch.min(q1, q2).mean()
 
+                # get termination loss
+                terminal_loss = nn.MSELoss()(discrete_emb, self.dis_embeddings.detach())
+
                 # combine all loss
                 # all_policy_loss = policy_loss + 1.2 * bc_loss + terminal_loss
-                all_policy_loss = policy_loss + 0.5 * bc_loss
+                all_policy_loss = policy_loss + 1 * bc_loss + 5*terminal_loss
 
                 self.policy_optim.zero_grad()
                 all_policy_loss.backward()
@@ -419,7 +421,8 @@ class AgentWrapper(object):
                 self.next_joint_state = self.next_joint_state.detach()
                 self.reward = self.reward.detach()
                 self.done = self.done.detach()
-                self.cvae_train(batch_size=40, timestep=timestep, all_step=1, ratio=None, sample=False)
+                self.cvae_train(batch_size=batch_size, timestep=timestep, all_step=1, ratio=None, sample=False)
+                self.get_median_offset(self.batch_size)
 
         duration = time.time() - start
         print(f"policy duration: {duration}", end="\n")
@@ -460,7 +463,10 @@ class AgentWrapper(object):
             "policy_feat_extractor_optim": self.policy_feat_extractor_optim.state_dict(),
             "encoder_feat_extractor": self.encoder_feat_extractor.state_dict(),
             "encoder_feat_extractor_optim": self.encoder_feat_extractor_optim.state_dict(),
-            "timestep": timestep
+            "timestep": timestep,
+            "median": self.median if self.median is not None else 0,
+            "offset": self.offset if self.offset is not None else 0
+
         }
         torch.save(save_dict, filename + ".pth")
 
@@ -478,6 +484,8 @@ class AgentWrapper(object):
         self.policy_feat_extractor_optim.load_state_dict(load_dict["policy_feat_extractor_optim"])
         self.encoder_feat_extractor.load_state_dict(load_dict["encoder_feat_extractor"])
         self.encoder_feat_extractor_optim.load_state_dict(load_dict["encoder_feat_extractor_optim"])
+        self.median = load_dict["median"]
+        self.offset = load_dict["offset"]
         return load_dict["timestep"]
 
     def prepare_data(self, input):
@@ -493,28 +501,46 @@ class AgentWrapper(object):
     def get_median_offset(self, batch_size, c_rate=0.1):
         """
         Get the median and offset of the data's each dimension
+        use _tmp to avoid update the data in main task
         """
-        (pc_state, joint_state, conti_action,
-            dis_action, _, _, _, _, _, _) = ray.get([self.replay_buffer_id.sample.remote(batch_size)])[0]
-        self.pc_state = self.prepare_data(pc_state)
-        self.joint_state = self.prepare_data(joint_state)
-        self.conti_action = self.prepare_data(conti_action)
-        self.dis_action = dis_action  # This one has to be int for index
-        self.dis_embeddings = self.cvae.emb_table[self.dis_action]
+        action_z_list = []
+        for i in range((5000 // batch_size) + int(bool(5000 % batch_size))):
+            (pc_state, joint_state, conti_action,
+                dis_action, _, _, next_pc_state, _, _, _) = ray.get([self.replay_buffer_id.sample.remote(batch_size)])[0]
+            pc_state_tmp = self.prepare_data(pc_state)
+            joint_state_tmp = self.prepare_data(joint_state)
+            conti_action_tmp = self.prepare_data(conti_action)
+            dis_action_tmp = dis_action  # This one has to be int for index
+            dis_embeddings_tmp = self.cvae.emb_table[dis_action_tmp]
+            with torch.no_grad():
+                all_feat = self.get_feature_for_encoder(pc_state_tmp, joint_state_tmp)
+                _, state_pred, action_z, _, _ = self.cvae(all_feat, dis_embeddings_tmp, conti_action_tmp)
 
-        with torch.no_grad():
-            all_feat = self.get_feature_for_encoder(self.pc_state, self.joint_state)
-            _, _, action_z, _, _ = self.cvae(all_feat, self.dis_embeddings, self.conti_action)
-            sorted_tensor, _ = torch.sort(action_z, dim=0)
-            max_idx = int((1 - c_rate) * batch_size)
-            min_idx = int(c_rate * batch_size)
-            up_boundary = sorted_tensor[max_idx]
-            down_boundary = sorted_tensor[min_idx]
+                action_z = action_z.detach().cpu().numpy()
+                for x in action_z:
+                    action_z_list.append(x)
 
-            median = (up_boundary - down_boundary)/2
-            offset = up_boundary - median
-        self.median = median
-        self.offset = offset
+        action_z_list = np.asarray(action_z_list)
+        action_z_list.sort(axis=0)
+        max_idx = int((1 - c_rate) * batch_size)
+        min_idx = int(c_rate * batch_size)
+        up_boundary = action_z_list[max_idx]
+        down_boundary = action_z_list[min_idx]
+
+        median = (up_boundary - down_boundary)/2
+        offset = up_boundary - median
+
+        # action_recon, state_pred = self.cvae.decode(cvae_state, dis_para, conti_para)
+        # print(f"in reassign con state_pred: {state_pred.size()}")
+        state_pred_np = state_pred.detach().cpu().numpy()
+        # print(f"next_pc_state[:, -3:, :]; {next_pc_state[:, -3:, :]}")
+        next_gripper_points = next_pc_state[:, -3:, :3]
+        delta_loss = np.sqrt((np.square(state_pred_np - next_gripper_points)).sum(axis=-1)).sum(-1).reshape(-1, 1)
+        # print(f"delta_loss_mean: {np.mean(delta_loss)}")
+
+        self.median = torch.from_numpy(median).to(self.device)
+        self.offset = torch.from_numpy(offset).to(self.device)
+        self.rec_rate = np.mean(delta_loss)
 
     def capsulate_to_emb(self, parameter):
         # from [median - offset, median + offset] to [-1, 1]
@@ -579,7 +605,9 @@ class AgentWrapper(object):
             "policy_feat_extractor_optim": self.policy_feat_extractor_optim.state_dict(),
             "encoder_feat_extractor": self.encoder_feat_extractor.state_dict(),
             "encoder_feat_extractor_optim": self.encoder_feat_extractor_optim.state_dict(),
-            "timestep": None
+            "timestep": None,
+            "median": self.median if self.median is not None else 0,
+            "offset": self.offset if self.offset is not None else 0
         }
         return update_dict
 
