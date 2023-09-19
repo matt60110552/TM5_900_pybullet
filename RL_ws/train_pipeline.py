@@ -125,7 +125,9 @@ if __name__ == "__main__":
         for i in range(policy_train_times):
             # first half of the policy_train_times use all expert data, and then the ratio keeps going up
             # ratio = 0 if i < policy_train_times // 2 else int((i - (policy_train_times // 2)) / max((policy_train_times // 2), 1))
-            ratio = 0.5
+            # ratio = 0.5
+            # ratio = (1 - i/policy_train_times)
+            ratio = max(0.1, min(0.9, 1 - i/policy_train_times))
             roll = []
             roll.extend([actor.rollout_once.remote(mode="both") for actor in actor_ids])
             roll.extend([learner_id.critic_train.remote(batch_size, timestep, ratio=ratio)])
@@ -134,7 +136,16 @@ if __name__ == "__main__":
             result = ray.get(roll)
             critic_loss, policy_loss, bc_loss, terminal_loss = result[-3]
             weight = result[-1]
+
+            # get the total reward value of policy move for observation
+            policy_reward_list = []
+            for x in result[:actor_num]:
+                if x[0] == 1:
+                    policy_reward_list.append(x[1])
+
             writer.add_scalar("critic_loss", critic_loss, timestep)
+            if len(policy_reward_list) > 0:
+                writer.add_scalar("policy_reward", sum(policy_reward_list)/len(policy_reward_list), timestep)
             if policy_loss is not None:
                 writer.add_scalar("policy_loss", policy_loss, timestep)
                 writer.add_scalar("bc_loss", bc_loss, timestep)
@@ -173,7 +184,7 @@ if __name__ == "__main__":
 
         if load_memory:
             if (os.path.isfile(npz_data_path + "/" + "expert.npz") and
-               os.path.isfile(npz_data_path + "/" + "on_policy.npz")):
+                os.path.isfile(npz_data_path + "/" + "on_policy.npz")):
                 roll = []
                 roll.extend([replay_buffer_id.load_data.remote(npz_data_path + "/" + "expert.npz")])
                 roll.extend([replay_online_buffer_id.load_data.remote(npz_data_path + "/" + "on_policy.npz")])
@@ -185,11 +196,11 @@ if __name__ == "__main__":
         """
         Start to use model to move in pybullet
         """
-        # First to collect data and get the range for z(from policy) to rescale.
-        for _ in range(1):
-            roll = []
-            roll.extend([actor.rollout_once.remote() for actor in actor_ids])
-            result = ray.get(roll)
+        # # First to collect data and get the range for z(from policy) to rescale.
+        # for _ in range(1):
+        #     roll = []
+        #     roll.extend([actor.rollout_once.remote() for actor in actor_ids])
+        #     result = ray.get(roll)
 
         # Use the data above to get the range and then to use policy to interact with env.
         roll = []
