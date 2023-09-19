@@ -46,7 +46,7 @@ class AgentWrapper(object):
         self.tau = 0.005
         self.timestep = 0
         self.policy_freq = 2
-        self.cvae_retrain_frequency = 5
+        self.cvae_retrain_frequency = 10
         self.discount = 0.95
         self.cvae_loop_time = 20
         self.policy_loop_time = 20
@@ -297,36 +297,38 @@ class AgentWrapper(object):
         bc_loss_list = []
         terminal_loss_list = []
         self.critic.train()
-        self.critic_target.train()
+        self.critic_target.eval()
         self.policy.train()
-        self.policy_target.train()
+        self.policy_target.eval()
         self.policy_feat_extractor.train()
+        self.cvae.eval()
         start = time.time()
 
         expert_batch_size = batch_size if not ratio else int(batch_size * ratio)
         policy_batch_size = batch_size - expert_batch_size
 
         for _ in range(self.policy_loop_time):
-            (pc_state, joint_state, conti_action,
-                dis_action, conti_para, dis_para, next_pc_state, next_joint_state,
-                reward, done) = ray.get([self.replay_buffer_id.sample.remote(expert_batch_size)])[0]
+            if expert_batch_size > 0:
+                (pc_state, joint_state, conti_action,
+                    dis_action, conti_para, dis_para, next_pc_state, next_joint_state,
+                    reward, done) = ray.get([self.replay_buffer_id.sample.remote(expert_batch_size)])[0]
             if policy_batch_size > 0:
                 (policy_pc_state, policy_joint_state, policy_conti_action,
                  policy_dis_action, policy_conti_para, policy_dis_para,
                  policy_next_pc_state, policy_next_joint_state,
                  policy_reward, policy_done) = ray.get([self.replay_buffer_id.sample.remote(policy_batch_size)])[0]
 
-                # combine the datas
+                # combine the datas, not sure why some of data need to use concatenate rather than vstack
                 pc_state = np.vstack((pc_state, policy_pc_state))
                 joint_state = np.vstack((joint_state, policy_joint_state))
-                conti_action = np.vstack((conti_action, policy_conti_action))
-                dis_action = np.vstack((dis_action, policy_dis_action))
+                conti_action = np.concatenate((conti_action, policy_conti_action), axis=0)
+                dis_action = np.concatenate((dis_action, policy_dis_action), axis=0)
                 conti_para = np.vstack((conti_para, policy_conti_para))
                 dis_para = np.vstack((dis_para, policy_dis_para))
                 next_pc_state = np.vstack((next_pc_state, policy_next_pc_state))
-                next_joint_state = np.vstack((pc_state, policy_next_joint_state))
-                reward = np.vstack((reward, policy_reward))
-                done = np.vstack((done, policy_done))
+                next_joint_state = np.vstack((next_joint_state, policy_next_joint_state))
+                reward = np.concatenate((reward, policy_reward), axis=0)
+                done = np.concatenate((done, policy_done), axis=0)
 
             self.pc_state = self.prepare_data(pc_state)
             self.joint_state = self.prepare_data(joint_state)
@@ -358,7 +360,6 @@ class AgentWrapper(object):
 
             feat_critic = self.get_feature_for_policy(self.pc_state, self.joint_state)
             current_q1, current_q2, _ = self.critic(feat_critic, self.dis_embeddings, self.conti_para)
-
             print(f"target_Q: {torch.mean(target_Q)}, current_q1: {torch.mean(current_q1)}, current_q2: {torch.mean(current_q2)}")
 
             critic1_loss = nn.MSELoss()(current_q1, target_Q)
@@ -380,20 +381,20 @@ class AgentWrapper(object):
 
                 # calculate the distance between the reconstruct action and the data's action
                 action_recon, _ = self.cvae.decode(feat_encoder, discrete_emb, conti_para)
-                bc_loss = nn.MSELoss()(action_recon, self.conti_action)
-                # print(f"action_recon: {action_recon}")
-                # print(f"self.conti_action: {self.conti_action}")
+                if expert_batch_size != 0:
+                    bc_loss = nn.MSELoss()(action_recon[:expert_batch_size], self.conti_action[:expert_batch_size])
+                else:
+                    bc_loss = 0
 
                 # get policy_loss through critic
                 q1, q2, _ = self.critic(feat_policy, discrete_emb, continue_emb)
                 policy_loss = -torch.min(q1, q2).mean()
-
                 # get termination loss
                 terminal_loss = nn.MSELoss()(discrete_emb, self.dis_embeddings.detach())
 
                 # combine all loss
                 # all_policy_loss = policy_loss + 1.2 * bc_loss + terminal_loss
-                all_policy_loss = policy_loss + 1 * bc_loss + 5*terminal_loss
+                all_policy_loss = policy_loss + 5 * bc_loss + 5 * terminal_loss
 
                 self.policy_optim.zero_grad()
                 all_policy_loss.backward()
@@ -406,23 +407,24 @@ class AgentWrapper(object):
                 policy_loss_list.append(policy_loss.detach().cpu().numpy())
                 bc_loss_list.append(bc_loss.detach().cpu().numpy())
                 terminal_loss_list.append(terminal_loss.detach().cpu().numpy())
-
-            # retrain the cvae part in order to keep updating the latent space
-            self.cvae_loop_time = 1
-            if timestep % self.cvae_retrain_frequency == 0:
-                self.pc_state = self.pc_state.detach()
-                self.joint_state = self.joint_state.detach()
-                self.conti_action = self.conti_action.detach()
-                self.dis_embeddings = self.dis_embeddings.detach()
-                self.conti_para = self.conti_para.detach()
-                self.dis_para = self.dis_para.detach()
-                self.next_pc_state = self.next_pc_state.detach()
-                self.next_joint_state = self.next_joint_state.detach()
-                self.reward = self.reward.detach()
-                self.done = self.done.detach()
-                self.cvae_train(batch_size=batch_size, timestep=timestep, all_step=1, ratio=None, sample=False)
-                self.get_median_offset(self.batch_size)
-
+        # retrain the cvae part in order to keep updating the latent space
+        self.cvae_loop_time = 1
+        if timestep % self.cvae_retrain_frequency == 0:
+            self.cvae.train()
+            self.pc_state = self.pc_state.detach()
+            self.joint_state = self.joint_state.detach()
+            self.conti_action = self.conti_action.detach()
+            self.dis_embeddings = self.dis_embeddings.detach()
+            self.conti_para = self.conti_para.detach()
+            self.dis_para = self.dis_para.detach()
+            self.next_pc_state = self.next_pc_state.detach()
+            self.next_joint_state = self.next_joint_state.detach()
+            self.reward = self.reward.detach()
+            self.done = self.done.detach()
+            self.cvae_train(batch_size=batch_size, timestep=timestep, all_step=1, ratio=None, sample=False)
+            self.cvae.eval()
+            self.get_median_offset(self.batch_size)
+            print(f"time6: {time.time() - start}")
         duration = time.time() - start
         print(f"policy duration: {duration}", end="\n")
 
@@ -510,7 +512,7 @@ class AgentWrapper(object):
             joint_state_tmp = self.prepare_data(joint_state)
             conti_action_tmp = self.prepare_data(conti_action)
             dis_action_tmp = dis_action  # This one has to be int for index
-            dis_embeddings_tmp = self.cvae.emb_table[dis_action_tmp]
+            dis_embeddings_tmp = self.get_emb_table(dis_action_tmp)
             with torch.no_grad():
                 all_feat = self.get_feature_for_encoder(pc_state_tmp, joint_state_tmp)
                 _, state_pred, action_z, _, _ = self.cvae(all_feat, dis_embeddings_tmp, conti_action_tmp)
@@ -566,14 +568,14 @@ class AgentWrapper(object):
         state_pred_np = state_pred.detach().cpu().numpy()
         next_gripper_points = next_pc_state[:, -3:, :3].detach().cpu().numpy()
         delta_loss = np.sqrt((np.square(state_pred_np - next_gripper_points)).sum(axis=-1)).sum(-1).reshape(-1, 1)
-        print(f"delta_loss: {delta_loss}")
+        print(f"delta_loss: {np.mean(delta_loss)}")
         s_bing = (abs(delta_loss) < recon_s_rate) * 1
         parameter_relable_rate = sum(s_bing.reshape(1, -1)[0]) / batch_size
         s_bing = torch.FloatTensor(s_bing).float().to(self.device)
         self.conti_para = self.rescale_to_new_crange(s_bing * conti_emb + (1 - s_bing) * conti_emb_)
 
     def reassign_discrete(self, dis_action, dis_emb_old, batch_size):
-        dis_emb_new = self.cvae.emb_table[dis_action]
+        dis_emb_new = self.get_emb_table(dis_action)
         # discrete relable need noise
         noise_discrete = (
                 torch.randn_like(dis_emb_new) * 0.1
@@ -615,7 +617,7 @@ class AgentWrapper(object):
         joint_state = self.prepare_data(joint_state)
         conti_action = self.prepare_data(conti_action)
         with torch.no_grad():
-            dis_para = self.cvae.emb_table[dis_action]
+            dis_para = self.get_emb_table(dis_action)
             state_feat = self.encoder_feat_extractor(pc_state.unsqueeze(dim=0), joint_state.unsqueeze(dim=0))
             conti_para, _, _ = self.cvae.encode(state_feat, dis_para.unsqueeze(dim=0), conti_action.unsqueeze(dim=0))
             conti_para = conti_para.detach().cpu().numpy().squeeze()
