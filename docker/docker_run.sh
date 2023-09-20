@@ -52,10 +52,10 @@ docker run \
     -v "/tmp/.X11-unix:/tmp/.X11-unix" \
     -v "/etc/localtime:/etc/localtime:ro" \
     --user "root:root" \
-    --name rl_tm5_pybullet \
+    --name rl_matt \
     --network host \
     --privileged \
     --security-opt seccomp=unconfined \
     $DOCKER_OPTS \
-    iscilab/rl_tm5-pybullet:cuda-20-04 \
+    iscilab/rl_matt:cuda-20-04 \
     $BASH_OPTION

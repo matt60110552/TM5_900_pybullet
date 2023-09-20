@@ -15,14 +15,15 @@ export MAKEFLAGS="-j `nproc`"
 
 ${SUDO} apt-get -y install python3-dev python3-pip
 # install additional python dependencies via pip
-${SUDO} pip3 install -vU https://github.com/CastXML/pygccxml/archive/develop.zip pyplusplus
+${SUDO} pip3 install  pyplusplus
+${SUDO} pip3 install  pygccxml==2.2.1
 # install castxml
 ${SUDO} apt-get -y install castxml
 ${SUDO} apt-get -y install libboost-python-dev
 ${SUDO} apt-get -y install libboost-numpy-dev python${PYTHONV}-numpy
 ${SUDO} apt-get -y install pypy3
 
-git clone -b 1.5.0 https://github.com/ompl/ompl.git
+git clone https://github.com/ompl/ompl.git
 cd ompl
 mkdir -p build/Release
 cd build/Release
