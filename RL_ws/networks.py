@@ -233,7 +233,7 @@ class ConditionalPredictNetwork(nn.Module):
         self.linear2 = self.get_mlp(hidden_dim, hidden_dim, hidden_dim)
         self.reconstruct = nn.Linear(hidden_dim, num_actions)
         self.linear3 = self.get_mlp(hidden_dim, hidden_dim, hidden_dim)
-        self.state_predict = nn.Linear(hidden_dim, 3*3)
+        self.state_predict = nn.Linear(hidden_dim, 3*10)
 
         self.apply(weights_init_)
         self.action_space = action_space
@@ -266,7 +266,7 @@ class ConditionalPredictNetwork(nn.Module):
         action_recon = torch.tanh(x_t) * torch.from_numpy(self.max_joint_limit).float().to(self.device)
         if state_recon:
             state_pred = self.state_predict(F.relu(self.linear3(x)))
-            state_pred = state_pred.view(-1, 3, 3)
+            state_pred = state_pred.view(-1, 10, 3)
             return action_recon, state_pred
         else:
             return action_recon, None
