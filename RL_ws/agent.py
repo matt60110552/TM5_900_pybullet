@@ -169,6 +169,7 @@ class AgentWrapper(object):
         con_recon_loss_list = []
         kl_loss_list = []
         gripper_pre_loss_list = []
+        manipulator_pre_loss_list = []
         # self.beta = 0.0000025 * min(1.0, timestep / max((all_step//2), 1))
         self.alpha = 0.0001 * min(1.0, timestep / max((all_step//2), 1))
 
@@ -226,18 +227,18 @@ class AgentWrapper(object):
                 self.done = self.prepare_data(done)
 
             self.all_feat = self.get_feature_for_encoder(self.pc_state, self.joint_state)
-            self.action_recon, self.gripper_next, self.action_z, self.mean, self.log_std = self.cvae(self.all_feat, self.dis_embeddings, self.conti_action)
+            self.action_recon, self.manipulator_next, self.action_z, self.mean, self.log_std = self.cvae(self.all_feat, self.dis_embeddings, self.conti_action)
 
             con_recon_loss = F.mse_loss(self.conti_action, self.action_recon)
             # print(f"(conti_action: {self.conti_action} action_recon: {self.action_recon}")
             # print(f"mean: {self.mean}, log_std: {self.log_std}")
             kl_loss = self.kl_divergence_loss(self.mean, self.log_std)
-            gripper_pre_loss = F.mse_loss(self.next_pc_state[:, -3:, :3], self.gripper_next)
-
+            manipulator_pre_loss = F.mse_loss(self.next_pc_state[:, -10:, :3], self.manipulator_next)
+            gripper_pre_loss = F.mse_loss(self.next_pc_state[:, -3:, :3], self.manipulator_next[:, -3:, :3])
             self.beta, _ = self.PIDControl.pid(20, kl_loss.item(), Kp=0.01, Ki=(-0.0001), Kd=0.0)
             # print(f"beta: {self.beta}")
             # print(f"kl_loss: {kl_loss.item()}")
-            total_loss = 5000 * con_recon_loss + self.beta * kl_loss + 1 * gripper_pre_loss
+            total_loss = 5000 * con_recon_loss + self.beta * kl_loss + 1 * manipulator_pre_loss + gripper_pre_loss
             # total_loss = 1000 * con_recon_loss + self.beta * kl_loss
 
             self.encoder_feat_extractor_optim.zero_grad()
@@ -249,6 +250,7 @@ class AgentWrapper(object):
             con_recon_loss_list.append(con_recon_loss.detach().cpu().numpy())
             kl_loss_list.append(kl_loss.detach().cpu().numpy())
             gripper_pre_loss_list.append(gripper_pre_loss.detach().cpu().numpy())
+            manipulator_pre_loss_list.append(manipulator_pre_loss.detach().cpu().numpy())
 
         duration = time.time() - start
         # print(f"self.conti_action: {self.conti_action}")
@@ -258,7 +260,8 @@ class AgentWrapper(object):
         mean_con_recon_loss = sum(con_recon_loss_list)/len(con_recon_loss_list)
         mean_kl_loss = sum(kl_loss_list)/len(kl_loss_list)
         mean_gripper_pre_loss = sum(gripper_pre_loss_list)/len(gripper_pre_loss_list)
-        return (mean_con_recon_loss, mean_kl_loss, mean_gripper_pre_loss)
+        mean_manipulator_pre_loss = sum(manipulator_pre_loss_list)/len(manipulator_pre_loss_list)
+        return (mean_con_recon_loss, mean_kl_loss, mean_gripper_pre_loss, mean_manipulator_pre_loss)
 
     def kl_divergence_loss(self, mean, log_std):
         # # Compute the element-wise KL divergence for each sample
@@ -533,9 +536,9 @@ class AgentWrapper(object):
 
         # action_recon, state_pred = self.cvae.decode(cvae_state, dis_para, conti_para)
         # print(f"in reassign con state_pred: {state_pred.size()}")
-        state_pred_np = state_pred.detach().cpu().numpy()
+        state_pred_np = state_pred[:,-3:,:].detach().cpu().numpy()
         # print(f"next_pc_state[:, -3:, :]; {next_pc_state[:, -3:, :]}")
-        next_gripper_points = next_pc_state[:, -3:, :3]
+        next_gripper_points = next_pc_state[:, -10:, :3]
         delta_loss = np.sqrt((np.square(state_pred_np - next_gripper_points)).sum(axis=-1)).sum(-1).reshape(-1, 1)
         # print(f"delta_loss_mean: {np.mean(delta_loss)}")
 
@@ -566,7 +569,7 @@ class AgentWrapper(object):
         action_recon, state_pred = self.cvae.decode(cvae_state, dis_para, conti_para)
         # print(f"in reassign con state_pred: {state_pred.size()}")
         state_pred_np = state_pred.detach().cpu().numpy()
-        next_gripper_points = next_pc_state[:, -3:, :3].detach().cpu().numpy()
+        next_gripper_points = next_pc_state[:, -10:, :3].detach().cpu().numpy()
         delta_loss = np.sqrt((np.square(state_pred_np - next_gripper_points)).sum(axis=-1)).sum(-1).reshape(-1, 1)
         print(f"delta_loss: {np.mean(delta_loss)}")
         s_bing = (abs(delta_loss) < recon_s_rate) * 1
