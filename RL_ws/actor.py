@@ -8,7 +8,7 @@ from mpl_toolkits.mplot3d import Axes3D
 import sys
 import ray
 import os
-import datetime
+import random
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
@@ -51,7 +51,7 @@ class ActorWrapper(object):
         # disable the collision between the basse of TM5 and plane        
         p.setCollisionFilterPair(self.env.plane_id, self.env._panda.pandaUid, -1, 0, enableCollision=False)
 
-    def rollout_once(self, mode="expert"):
+    def rollout_once(self, mode="expert", explore_ratio=0):
         start = time.time()
         self.env.reset(save=False, enforce_face_target=False, reset_free=True)
         if mode == "expert":
@@ -60,10 +60,10 @@ class ActorWrapper(object):
             """
             Use actor to react to the state
             """
-            rewards = self.policy_move()
+            rewards = self.policy_move(explore_ratio=explore_ratio)
             # rewards = self.policy_move(vis=True)
         elif mode == "both":
-            rewards = self.policy_move() if random.random() < 0.5 else self.expert_move()
+            rewards = self.policy_move(explore_ratio=explore_ratio) if random.random() < 0.5 else self.expert_move()
 
         duration = time.time() - start
         print(f"actor duration: {duration}")
@@ -156,13 +156,14 @@ class ActorWrapper(object):
 
         return planer_path
 
-    def policy_move(self, vis=False):
-        # data_list is for store data, unlike expert_move, here we store all the procees, including fail one
+    def policy_move(self, vis=False, explore_ratio=0):
+        # data_list is for store data, here we store all the procees, including fail one
         data_list = []
         self.target_points = None
         self.obstacle_points = None
         done = 0
         reward = 0
+        success= 0
         movement_num = 0
         pos, ori = p.getBasePositionAndOrientation(self.env._objectUids[self.env.target_idx])
         fixed_joint_constraint = p.createConstraint(
@@ -176,8 +177,19 @@ class ActorWrapper(object):
             childFramePosition=pos,
             childFrameOrientation=ori
             )
+        
+        # Make the start state different
+        random_action = self.get_random_init_state()
+        self.env.step(random_action, config=True, repeat=500)
+        
+
+        grasp_pose = self.get_grasp_pose()
+        if grasp_pose is None:
+            p.removeConstraint(fixed_joint_constraint)
+            return (1, 0)
         while not done:
             movement_num += 1
+            reward = 0
             pc_state, target_points, manipulator_points = self.get_pc_state()
             if target_points is None:
                 # print(f"target_points.shape[0]: {target_points.shape[0]}")
@@ -189,12 +201,18 @@ class ActorWrapper(object):
 
             joint_state = self.get_joint_degree()
             # get action from policy
-            conti_action, discrete_action, dis_para, conti_para = ray.get([self.policy_id.select_action.remote(pc_state, joint_state)])[0]
-            conti_action = np.append(conti_action, 0)
-            print(f"conti_action: {conti_action}")
+            (conti_action,
+             discrete_action,
+             dis_para, conti_para) = ray.get([self.policy_id.select_action.remote(pc_state,
+                                                                                  joint_state,
+                                                                                  explore_rate=explore_ratio)])[0]
+            conti_action_abs = conti_action + joint_state
+            conti_action_abs = np.append(conti_action_abs, 0)
+            print(f"====================conti_action: {conti_action}")
             print(f"discrete_action: {discrete_action}")
 
-            obs = self.env.step(conti_action, delta=True, config=True, repeat=200)[0]
+            # obs = self.env.step(conti_action, delta=True, config=True, repeat=200)[0]
+            obs = self.env.step(conti_action_abs, config=True, repeat=300)[0]
 
             """visdom part visualize the image of the process"""
             self.vis.image(obs[0][1][:3].transpose(0, 2, 1), win=self.win_id, opts={"title": "policy"})
@@ -202,8 +220,13 @@ class ActorWrapper(object):
             next_pc_state, next_target_points, next_manipulator_points = self.get_pc_state()
             next_joint_state = self.get_joint_degree()
 
-            # set discrete_action to 0 when testing the continue action
-            # discrete_action = 0
+
+            # # check if the arm is blocked by object, preventing it from moving to the goal position
+            # if self.check_arrived_position(joint_state, conti_action[:6], next_joint_state):
+            #     print(f"Stop due to not arrived the goal position")
+            #     p.removeConstraint(fixed_joint_constraint)
+            #     reward = -0.1
+            #     done = 1
 
             if vis:
                 vis_pc = next_pc_state[:, :3]
@@ -212,11 +235,31 @@ class ActorWrapper(object):
                 axis_pcd = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
                 o3d.visualization.draw_geometries([point_cloud] + [axis_pcd])
 
+            # get the contactpoints
+            collisions = p.getContactPoints()
+            for coll in collisions:
+                if (self.env._objectUids[self.env.target_idx] in set(coll[1:3]) and
+                    self.env._panda.pandaUid in set(coll[1:3])):
+                    
+                    cur_joint = np.array(self.env._panda.getJointStates()[0])
+                    cur_joint[-1] = 0.8  # close finger
+                    # observations = [self.env.step(cur_joint, repeat=300, config=True, vis=False)[0]]
+                    obs = self.env.step(cur_joint, repeat=300, config=True, vis=False)    
+                    p.removeConstraint(fixed_joint_constraint)    
+                    discrete_action = 1
+                    break
+
+
+            # teminate if the movement achieve 30
             if movement_num > 30:
                 p.removeConstraint(fixed_joint_constraint)
-                reward = 0
+                discrete_action = 1
                 done = 1
+
             if discrete_action == 1:
+                # Even if the object isn't lifted, as long as the gripper is near the grasp pose, get bonus reward 
+                reward += self.approaching_reward(grasp_pose=grasp_pose)
+                
                 """
                 try to lift the target object
                 """
@@ -248,32 +291,31 @@ class ActorWrapper(object):
                     """visdom part visualize the image of the process"""
                     self.vis.image(obs[0][1][:3].transpose(0, 2, 1), win=self.win_id, opts={"title": "policy"})
 
+
                 if self.env.target_lifted():
                     reward = 1
+                    success = 1
 
-            # colision checking to avoid self collision
-            if self.collision_check():
-                p.removeConstraint(fixed_joint_constraint)
-                reward = -1
-                done = 1
-            
-            data_list.append((pc_state, joint_state, conti_action[:6],
+            # sometimes the arm will blocked by table or other objects, keeping it from reaching the goal position
+            # use next_joint_state - joint_state to get the actual executed action
+            excute_conti_action = next_joint_state - joint_state
+            data_list.append((pc_state, joint_state, excute_conti_action,
                               discrete_action, conti_para.squeeze(),
                               dis_para.squeeze(), next_pc_state,
                               next_joint_state, reward, done))
             
 
         for i in range(len(data_list)):
-            (pc_state, joint_state, conti_action[:6],
+            (pc_state, joint_state, conti_action,
              discrete_action, conti_para,
              dis_para, next_pc_state,
              next_joint_state, reward, done) = data_list[i]
 
-            ray.get([self.online_buffer_id.add.remote(pc_state, joint_state, conti_action[:6],
+            ray.get([self.online_buffer_id.add.remote(pc_state, joint_state, conti_action,
                                                       discrete_action, conti_para, dis_para, next_pc_state,
-                                                      next_joint_state, reward, done)])
+                                                      next_joint_state, reward, success, done)])
 
-        return (1, reward)
+        return (1, 1) if success else (1, -0.1)
 
     def expert_move(self, vis=False):
         # data_list is for store data, in order to save successful grasp process only
@@ -292,6 +334,12 @@ class ActorWrapper(object):
             childFramePosition=pos,
             childFrameOrientation=ori
             )
+        
+        # Make the start state different
+        random_action = self.get_random_init_state()
+        self.env.step(random_action, config=True, repeat=500)
+
+
         grasp_pose = self.get_grasp_pose()
         if grasp_pose is None:
             p.removeConstraint(fixed_joint_constraint)
@@ -323,7 +371,7 @@ class ActorWrapper(object):
             jointPoses = self.env._panda.solveInverseKinematics(next_pos[:3], ros_quat(next_pos[3:]))
             jointPoses[6] = 0
             jointPoses = jointPoses[:7].copy()
-            obs = self.env.step(jointPoses, config=True, repeat=200)[0]
+            obs = self.env.step(jointPoses, config=True, repeat=300)[0]
 
             # get next state and done and reward
             next_pc_state, next_target_points, next_manipulator_points = self.get_pc_state()
@@ -333,16 +381,17 @@ class ActorWrapper(object):
             dis_reward = distance - next_distance
             conti_para, dis_para = ray.get([self.policy_id.get_conti_dis_para.remote(pc_state, joint_state,
                                                                                      con_action, dis_action)])[0]
-
             reward = 0
             done = 0
+
+
             data_list.append((pc_state, joint_state, con_action,
                               dis_action, conti_para, dis_para,
                               next_pc_state, next_joint_state, reward, done))
             
             """visdom part visualize the image of the process"""
             self.vis.image(obs[0][1][:3].transpose(0, 2, 1), win=self.win_id, opts={"title": "expert"})
-            
+            # print(f"real_action: {next_joint_state-joint_state}, con_action: {con_action}")
 
             # check for pointcloud
             if vis:
@@ -374,35 +423,44 @@ class ActorWrapper(object):
             reward = 0
             done = 0
             if i == 1:
+                # Even if the object isn't lifted, as long as the gripper is near the grasp pose, get bonus reward 
+                reward += self.approaching_reward(grasp_pose=grasp_pose)
+
                 done = 1
                 dis_action = 1
+
+                pos, orn = self.env._get_ef_pose()
+                pos = np.array(pos)
+                orn = np.array(orn)[[3, 0, 1, 2]]  # x, y, z, w to w, x, y, z
+                orn = np.array(quat2euler(orn))  # quarternion to euler
+                grasp_pose_pos = grasp_pose[:3]
+                grasp_pose_orn = np.array(quat2euler(grasp_pose[-4:]))
+                # print(f"orn: {orn}, grasp_pose: {grasp_pose_orn}")
+                pos_reward = 0.001/(np.sqrt(sum(np.square(pos - grasp_pose_pos))) + 1e-7)
+                orn_reward = 0.0001/(np.sqrt(sum(np.square(orn - grasp_pose_orn))) + 1e-7)
+                # print(f"pos_reward: {pos_reward}, orn_reward: {orn_reward}")
+
                 p.removeConstraint(fixed_joint_constraint)
                 reward = self.env.retract()
-            # ray.get([self.buffer_id.add.remote(pc_state, joint_state, con_action, dis_action,
-            #                                    conti_para, dis_para, next_pc_state, next_joint_state,
-            #                                    reward, done)])
+                success = reward
+
+            # Add approaching reward
+            if reward == 0 :
+                reward += self.approaching_reward(grasp_pose=grasp_pose)
+
             data_list.append((pc_state, joint_state, con_action,
                               dis_action, conti_para, dis_para,
                               next_pc_state, next_joint_state, reward, done))
 
-            if reward == 1:
-                # store successful process into buffer
-                for i in range(len(data_list)):
-                    (pc_state, joint_state, con_action, dis_action,
-                     conti_para, dis_para, next_pc_state, next_joint_state,
-                     reward, done) = data_list[i]
-                    ray.get([self.buffer_id.add.remote(pc_state, joint_state, con_action, dis_action,
-                                                       conti_para, dis_para, next_pc_state, next_joint_state,
-                                                       reward, done)])
-            else:
-                # store fail process into online_buffer
-                for i in range(len(data_list)):
-                    (pc_state, joint_state, con_action, dis_action,
-                     conti_para, dis_para, next_pc_state, next_joint_state,
-                     reward, done) = data_list[i]
-                    ray.get([self.online_buffer_id.add.remote(pc_state, joint_state, con_action, dis_action,
-                                                              conti_para, dis_para, next_pc_state, next_joint_state,
-                                                              reward, done)])
+        # store successful process into buffer
+        for i in range(len(data_list)):
+            (pc_state, joint_state, con_action, dis_action,
+                conti_para, dis_para, next_pc_state, next_joint_state,
+                reward, done) = data_list[i]
+            ray.get([self.buffer_id.add.remote(pc_state, joint_state, con_action, dis_action,
+                                               conti_para, dis_para, next_pc_state, next_joint_state,
+                                               reward, success, done)])
+
         return (0, reward)
 
     def get_gripper_points(self, target_pointcloud=None):
@@ -438,7 +496,7 @@ class ActorWrapper(object):
         return target_points
 
     def get_joint_degree(self):
-        con_action = p.getJointStates(self.env._panda.pandaUid, [i for i in range(6)])
+        con_action = p.getJointStates(self.env._panda.pandaUid, [i for i in range(1, 7)])
         con_action = np.array([i[0] for i in con_action])
         return con_action
 
@@ -487,13 +545,6 @@ class ActorWrapper(object):
         self.target_points = target_points
         self.obstacle_points = obstacle_points
 
-        if vis:
-            target_o3d_pc = o3d.geometry.PointCloud()
-            target_o3d_pc.points = o3d.utility.Vector3dVector(target_points)
-            obstacle_o3d_pc = o3d.geometry.PointCloud()
-            obstacle_o3d_pc.points = o3d.utility.Vector3dVector(obstacle_points)
-            axis_pcd = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
-            o3d.visualization.draw_geometries([obstacle_o3d_pc]+[target_o3d_pc]+[axis_pcd])
 
         if target_points is None or obstacle_points is None:
             return None, None, None
@@ -504,8 +555,20 @@ class ActorWrapper(object):
             all_pc, manipulator_points = self.get_gripper_points(scene_points)
         else:
             all_pc, manipulator_points = self.get_gripper_points(target_points)
-        # if target_points is None or obstacle_points is None:
-        #     return None, None, None, None
+        
+
+        all_pc = self.base2camera(all_pc)
+        target_points = self.base2camera(target_points)
+        manipulator_points = self.base2camera(manipulator_points)
+
+        if vis:
+            target_o3d_pc = o3d.geometry.PointCloud()
+            target_o3d_pc.points = o3d.utility.Vector3dVector(target_points)
+            obstacle_o3d_pc = o3d.geometry.PointCloud()
+            obstacle_o3d_pc.points = o3d.utility.Vector3dVector(obstacle_points)
+            axis_pcd = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
+            o3d.visualization.draw_geometries([obstacle_o3d_pc]+[target_o3d_pc]+[axis_pcd])
+
         return all_pc, target_points, manipulator_points
 
     def get_distance(self, source_cloud, target_cloud):
@@ -562,6 +625,61 @@ class ActorWrapper(object):
                 return True
         return False
 
+    def base2camera(self, pointcloud):
+        inverse_camera_matrix = np.linalg.inv(self.env.cam_offset)
+        inverse_ef_pose_matrix = np.linalg.inv(self.env._get_ef_pose('mat'))
+        original_fourth_column = pointcloud[:, 3].copy()
+        pointcloud[:, 3] = 1
+        pointcloud_ef_pose = np.dot(inverse_ef_pose_matrix, pointcloud.T).T[:, :3]
+        pointcloud_camera = np.dot(inverse_camera_matrix, np.hstack((pointcloud_ef_pose, np.ones((pointcloud_ef_pose.shape[0], 1)))).T).T
+        pointcloud_camera[:, 3] = original_fourth_column
+        return pointcloud_camera
+    
+    def check_arrived_position(self, joint_pos, action, next_joint_pos, abs_pos=False):
+        error_list = next_joint_pos - joint_pos - action[:6] if not abs_pos else next_joint_pos - action[:6]
+        # print(f"next_joint_pos: {next_joint_pos}, action: {action}, error_list: {error_list}")
+        # result = False
+        # for error in error_list:
+        #     if error > 0.01 or error < -0.01:
+        #         result = True
+        #         break
+        result = any(abs(error) > 0.01 for error in error_list)
+        return result
+    
+    def approaching_reward(self, grasp_pose):
+        pos, orn = self.env._get_ef_pose()
+        pos = np.array(pos)
+        orn = np.array(orn)[[3, 0, 1, 2]]  # x, y, z, w to w, x, y, z
+        orn = np.array(quat2euler(orn))  # quarternion to euler
+        try:
+            grasp_pose_list = np.array(pack_pose(grasp_pose))
+        except:
+            grasp_pose_list = np.array(grasp_pose)
+        grasp_pose_pos = grasp_pose_list[:3]
+        grasp_pose_orn = np.array(quat2euler(grasp_pose_list[-4:]))
+        # print(f"orn: {orn}, grasp_pose: {grasp_pose_orn}")
+        pos_error = np.sqrt(sum(np.square(pos - grasp_pose_pos)))
+        orn_error = np.sqrt(sum(np.square(orn - grasp_pose_orn)))
+        # print(f"pos_error: {pos_error}, orn_error: {orn_error}")
+        
+        app_reward = 0
+        if pos_error < 0.04:
+            pos_reward = 0.0001/pos_error
+            orn_reward = 0.0001/orn_error
+            print(f"pos_reward: {pos_reward}, orn_reward: {orn_reward}!!!!!!!!!!!!!!!!!!!!!!")
+            app_reward = pos_reward + orn_reward
+        return app_reward
+    
+    def get_random_init_state(self):
+        init_state_list = [
+            [0., -1, 2, 0, 1.571, 0.0, 0.0, 0.0, 0.0],
+            [0.2, -1.15, 2, 0, 1.571, 0.0, 0.0, 0.0, 0.0],
+            [0.2, -1.15, 2.2, -0.5, 1.571, 0.0, 0.0, 0.0, 0.0],
+            [0.2, -1.15, 2.2, -0.5, 1.3, 0.0, 0.0, 0.0, 0.0]
+        ]
+        # Choose a random 1D array from the list
+        random_init_state = random.choice(init_state_list)
+        return random_init_state
 
 @ray.remote(num_cpus=1, num_gpus=0.12)
 class ActorWrapper012(ActorWrapper):

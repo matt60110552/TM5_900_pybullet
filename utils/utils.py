@@ -313,7 +313,7 @@ def unpack_pose(pose, rot_first=False):
 
 
 def quat2euler(quat):
-    return mat2euler(quat2mat(quat))
+    return mat2euler(quat2mat(quat))  # quat2mat input format is w, x, y, z
 
 
 def pack_pose(pose, rot_first=False):
