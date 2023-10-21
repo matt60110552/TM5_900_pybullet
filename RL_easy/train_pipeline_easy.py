@@ -67,6 +67,7 @@ if __name__ == "__main__":
         # Create a folder for logs using the formatted datetime
         log_path = os.path.join(current_file_path, 'logs')
         npz_data_path = os.path.join(current_file_path, 'npz_data/scene_level') if scene_level else os.path.join(current_file_path, 'npz_data/object_level')
+        
         # load model test
         if args.load_filename is not None:
             ray.get(learner_id.load.remote(checkpoint_path + "/" + args.load_filename))
