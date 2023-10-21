@@ -125,7 +125,7 @@ class SimulatedYCBEnv():
         self.connected = False
 
     def reset(self, save=False, init_joints=None, num_object=1, if_stack=True,
-              cam_random=0, reset_free=False, enforce_face_target=False):
+              cam_random=0, reset_free=False, enforce_face_target=False, furniture="table"):
         """
         Environment reset called at the beginning of an episode.
         """
@@ -159,13 +159,21 @@ class SimulatedYCBEnv():
 
         # Set table and plane
         plane_file = os.path.join(self.root_dir,  'data/objects/floor/model_normalized.urdf')  # _white
-        table_file = os.path.join(self.root_dir,  'data/objects/table/models/model_normalized.urdf')
 
-        self.obj_path = [plane_file, table_file]
         self.plane_id = p.loadURDF(plane_file, [0, 0, 0], useFixedBase=True)
-        self.table_pos = np.array([0.8, 0.0, 0.01])
-        self.table_id = p.loadURDF(table_file, self.table_pos[0], self.table_pos[1], self.table_pos[2],
-                                   0.707, 0., 0., 0.707)
+        if furniture == "table":
+            furniture_file = os.path.join(self.root_dir,  'data/objects/table/models/model_normalized.urdf')
+            self.furniture_pos = np.array([0.8, 0.0, 0.01])
+            self.furniture_id = p.loadURDF(furniture_file, self.furniture_pos[0], self.furniture_pos[1], self.furniture_pos[2],
+                                           0.707, 0., 0., 0.707)
+            self.furniture_z = 0.45
+        elif furniture == "cabinet":
+            furniture_file = os.path.join(self.root_dir,  'data/objects/cabinet/model.urdf')
+            self.furniture_pos = np.array([0.8, 0.0, 0.01])
+            self.furniture_id = p.loadURDF(furniture_file, self.furniture_pos[0], self.furniture_pos[1], self.furniture_pos[2],
+                                           0., 0., 0., 1.)
+            self.furniture_z = 0.59
+        self.obj_path = [plane_file, furniture_file]
 
         # Intialize robot and objects
         if init_joints is None:
@@ -179,69 +187,73 @@ class SimulatedYCBEnv():
         if not self.objects_loaded:
             self._objectUids = self.cache_objects()
 
-        self._randomly_place_objects_pack(self._get_random_object(num_object), scale=1, if_stack=if_stack)
+        if furniture == "table":
+            self._randomly_place_objects_pack(self._get_random_object(num_object), scale=1, if_stack=if_stack)
+        elif furniture == "cabinet":
+            self._randomly_place_objects_pack(self._get_random_object(1), scale=1, if_stack=if_stack)
 
-        self._objectUids += [self.plane_id, self.table_id]
+
+        self._objectUids += [self.plane_id, self.furniture_id]
         self.collided = False
         self.collided_before = False
         self.obj_names, self.obj_poses = self.get_env_info()
         self.init_target_height = self._get_target_relative_pose()[2, 3]
         return None  # observation
 
-    def pillar_reset(self, init_joints=None, pillars_xy=None):
-        """
-        init_joints: list of TM5's joint, length can be 6 or 7
-        pillar_xy: 2d list of pillars' x and y position, dim 0's length can be 0(no pillar), dim1's length should  be at least 2.
-        """
-        self.disconnect()
-        self.connect()
-        look = [0.1 - self._shift[0], 0.2 - self._shift[1], 0 - self._shift[2]]
-        distance = 2.5
-        pitch = -56
-        yaw = 245
-        roll = 0.
-        fov = 20.
-        aspect = float(self._window_width) / self._window_height
-        self.near = 0.1
-        self.far = 10
-        self._view_matrix = p.computeViewMatrixFromYawPitchRoll(look, distance, yaw, pitch, roll, 2)
-        self._proj_matrix = p.computeProjectionMatrixFOV(fov, aspect, self.near, self.far)
-        self._light_position = np.array([-1.0, 0, 2.5])
-        self.pillars_pos = {}
-        self.pillar_ids = []
+    # def pillar_reset(self, init_joints=None, pillars_xy=None):
+    #     """
+    #     init_joints: list of TM5's joint, length can be 6 or 7
+    #     pillar_xy: 2d list of pillars' x and y position, dim 0's length can be 0(no pillar), dim1's length should  be at least 2.
+    #     """
+    #     self.disconnect()
+    #     self.connect()
+    #     look = [0.1 - self._shift[0], 0.2 - self._shift[1], 0 - self._shift[2]]
+    #     distance = 2.5
+    #     pitch = -56
+    #     yaw = 245
+    #     roll = 0.
+    #     fov = 20.
+    #     aspect = float(self._window_width) / self._window_height
+    #     self.near = 0.1
+    #     self.far = 10
+    #     self._view_matrix = p.computeViewMatrixFromYawPitchRoll(look, distance, yaw, pitch, roll, 2)
+    #     self._proj_matrix = p.computeProjectionMatrixFOV(fov, aspect, self.near, self.far)
+    #     self._light_position = np.array([-1.0, 0, 2.5])
+    #     self.pillars_pos = {}
+    #     self.pillar_ids = []
 
-        p.resetSimulation()
-        p.setTimeStep(self._timeStep)
-        p.setPhysicsEngineParameter(enableConeFriction=0)
+    #     p.resetSimulation()
+    #     p.setTimeStep(self._timeStep)
+    #     p.setPhysicsEngineParameter(enableConeFriction=0)
 
-        p.setGravity(0, 0, -9.81)
-        p.stepSimulation()
+    #     p.setGravity(0, 0, -9.81)
+    #     p.stepSimulation()
 
-        # Set table and plane
-        plane_file = os.path.join(self.root_dir,  'data/objects/floor/model_normalized.urdf')  # _white
-        pillar_file = os.path.join(self.root_dir,  'data/objects/cylinder_collision/model.urdf')
+    #     # Set table and plane
+    #     plane_file = os.path.join(self.root_dir,  'data/objects/floor/model_normalized.urdf')  # _white
+    #     pillar_file = os.path.join(self.root_dir,  'data/objects/cylinder_collision/model.urdf')
 
-        self.obj_path = [plane_file, pillar_file]
-        self.plane_id = p.loadURDF(plane_file, [0, 0, 0], useFixedBase=True)
-        if pillars_xy is None:
-            self.pillar_ids = None
-        else:
-            for xy in pillars_xy:
-                pillar_pos = np.array([xy[0], xy[1], 0.25])
-                id = p.loadURDF(pillar_file, pillar_pos, [1, 0., 0., 0.], useFixedBase=True)
-                self.pillar_ids.append(id)
-                self.pillars_pos[id] = pillar_pos
+    #     self.obj_path = [plane_file, pillar_file]
+    #     self.plane_id = p.loadURDF(plane_file, [0, 0, 0], useFixedBase=True)
+    #     if pillars_xy is None:
+    #         self.pillar_ids = None
+    #     else:
+    #         for xy in pillars_xy:
+    #             pillar_pos = np.array([xy[0], xy[1], 0.25])
+    #             id = p.loadURDF(pillar_file, pillar_pos, [1, 0., 0., 0.], useFixedBase=True)
+    #             self.pillar_ids.append(id)
+    #             self.pillars_pos[id] = pillar_pos
 
-        print(self.pillars_pos)
+    #     print(self.pillars_pos)
 
-        # Intialize robot and objects
-        if init_joints is None:
-            self._panda = TM5(stepsize=self._timeStep)
+    #     # Intialize robot and objects
+    #     if init_joints is None:
+    #         self._panda = TM5(stepsize=self._timeStep)
 
-        else:
-            self._panda = TM5(stepsize=self._timeStep, init_joints=init_joints)
-            for _ in range(1000):
-                p.stepSimulation()
+    #     else:
+    #         self._panda = TM5(stepsize=self._timeStep, init_joints=init_joints)
+    #         for _ in range(1000):
+    #             p.stepSimulation()
 
     def cabinet_reset(self, save=False, init_joints=None, num_object=1, if_stack=True,
                       cam_random=0, reset_free=False, enforce_face_target=False):
@@ -283,7 +295,7 @@ class SimulatedYCBEnv():
         self.obj_path = [plane_file, cabinet_file]
         self.plane_id = p.loadURDF(plane_file, [0, 0, 0], useFixedBase=True)
         self.cabinet_pos = np.array([0.8, 0.0, 0.01])
-        self.table_pos = self.cabinet_pos
+        self.furniture_pos = self.cabinet_pos
         self.cabinet_id = p.loadURDF(cabinet_file, [self.cabinet_pos[0], self.cabinet_pos[1], self.cabinet_pos[2]],
                                      [0., 0., 0., 1.], useFixedBase=True)
 
@@ -579,7 +591,7 @@ class SimulatedYCBEnv():
         hand_cam_view_matrix = se3_inverse(cam_pose_mat.dot(rotX(np.pi/2).dot(rotY(-np.pi/2)))).T  # z backward
 
         lightDistance = 2.0
-        lightDirection = self.table_pos - self._light_position
+        lightDirection = self.furniture_pos - self._light_position
         lightColor = np.array([1., 1., 1.])
         light_center = np.array([-1.0, 0, 2.5])
         return hand_cam_view_matrix, hand_proj_matrix, lightDistance, lightColor, lightDirection, hand_near, hand_far
@@ -671,14 +683,14 @@ class SimulatedYCBEnv():
                         orn = p.getQuaternionFromEuler([0, 0, 1.57])
                     x_offset = 0.26 * math.cos(i*1.57)
                     y_offset = 0.26 * math.sin(i*1.57)
-                    self.wall.append(p.loadURDF(wall_file, self.table_pos[0] + x_offset, self.table_pos[1] + y_offset,
-                                     self.table_pos[2] + 0.3,
+                    self.wall.append(p.loadURDF(wall_file, self.furniture_pos[0] + x_offset, self.furniture_pos[1] + y_offset,
+                                     self.furniture_pos[2] + 0.3,
                                      orn[0], orn[1], orn[2], orn[3]))
                 for i in range(4):
                     x_offset = 0.26 * math.cos(i*1.57 + 0.785)
                     y_offset = 0.26 * math.sin(i*1.57 + 0.785)
-                    self.wall.append(p.loadURDF(wall_file2, self.table_pos[0] + x_offset, self.table_pos[1] + y_offset,
-                                     self.table_pos[2] + 0.33,
+                    self.wall.append(p.loadURDF(wall_file2, self.furniture_pos[0] + x_offset, self.furniture_pos[1] + y_offset,
+                                     self.furniture_pos[2] + 0.33,
                                      orn[0], orn[1], orn[2], orn[3]))
                 for i in range(8):
                     p.changeDynamics(self.wall[i], linkIndex=-1, mass=0)
@@ -730,7 +742,7 @@ class SimulatedYCBEnv():
         else:
             height_weight = self.object_heights[self.target_idx]
             # z_init = .4 + 1.95 * height_weight # original setting by h-chen
-            z_init = .45
+            z_init = self.furniture_z  # 0.45 for table and 0.59 for cabinet, change the number in "reset" function to reset the init_z of the object
         orn = p.getQuaternionFromEuler([x_rot, 0, np.random.uniform(-np.pi, np.pi)])
         p.resetBasePositionAndOrientation(self._objectUids[self.target_idx],
                                           [xpos, ypos,  z_init], [orn[0], orn[1], orn[2], orn[3]])
