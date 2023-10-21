@@ -228,7 +228,12 @@ class ConditionalPredictNetwork(nn.Module):
         self.log_std_linear = nn.Linear(hidden_dim, latent_size)
 
         # Decoder
-        self.decode2hidden = self.get_mlp(num_inputs + latent_size, hidden_dim, hidden_dim)
+        # self.decode2hidden = self.get_mlp(num_inputs + latent_size, hidden_dim, hidden_dim)
+
+        self.decode_discrete = self.get_mlp(num_inputs, hidden_dim, hidden_dim)
+        self.linear_decode = self.get_mlp(latent_size, hidden_dim, hidden_dim)
+        self.linear2 = self.get_mlp(hidden_dim, hidden_dim, hidden_dim)
+
         self.reconstruct = nn.Linear(hidden_dim, num_actions)
         self.state_predict = nn.Linear(hidden_dim, 10*3)
 
@@ -248,13 +253,17 @@ class ConditionalPredictNetwork(nn.Module):
         mean = self.mean(x2)
         log_std = self.log_std_linear(x2)
         action_z = self.reparameterize(mean, log_std)
-
         return action_z, mean, log_std
 
     def decode(self, state_feat, action_z, state_recon=True):
 
-        x1 = torch.cat((state_feat, action_z), dim=1)
-        x2 = F.relu(self.decode2hidden(x1))
+        # x1 = torch.cat((state_feat, action_z), dim=1)
+        # x2 = F.relu(self.decode2hidden(x1))
+
+        x1 = F.relu(self.decode_discrete(state_feat))
+        x2 = F.relu(self.linear_decode(action_z))
+        x2 = F.relu(self.linear2(x1 * x2))
+
         x_t = self.reconstruct(x2)
         state_pred = self.state_predict(x2)
         action_recon = torch.tanh(x_t) * torch.from_numpy(self.max_joint_limit).float().to(self.device)
