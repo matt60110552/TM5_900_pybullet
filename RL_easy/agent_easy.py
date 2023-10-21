@@ -25,8 +25,8 @@ class AgentWrapper(object):
         self.critic, self.critic_optim, self.critic_scheduler = self.get_critic()
         self.policy_target, _, _ = self.get_policy()
         self.critic_target, _, _ = self.get_critic()
-        self.policy_feat_extractor, self.policy_feat_extractor_optim = self.get_feature_extractor(scene_level)
-        self.encoder_feat_extractor, self.encoder_feat_extractor_optim = self.get_feature_extractor(scene_level)
+        self.policy_feat_extractor, self.policy_feat_extractor_optim, self.policy_feat_extractor_scheduler = self.get_feature_extractor(scene_level)
+        self.encoder_feat_extractor, self.encoder_feat_extractor_optim, self.encoder_feat_extractor_scheduler = self.get_feature_extractor(scene_level)
         self.offline_collect_times = 0  # How many episode should each actor to run for collecting the offline data
         self.offline_train_times = 0
         self.replay_buffer_id = replay_buffer_id
@@ -69,7 +69,9 @@ class AgentWrapper(object):
 
             conti_emb = self.policy(all_state)
             # random explore part
-            noise = (explore_rate * torch.randn(conti_emb.size())).clamp(-self.noise_clip, self.noise_clip).to(self.device)
+            # The noise range from -self.noise_clip to self.noise_clip at first, and then decrease.
+            noise = (explore_rate * self.noise_clip * torch.randn(conti_emb.size())).to(self.device)
+
             conti_emb = (conti_emb + noise).clamp(-1, 1)
             conti_para = self.rescale_to_new_crange(conti_emb)
 
@@ -130,7 +132,12 @@ class AgentWrapper(object):
         extractor.to(self.device)
         extractor_optim = optim.Adam(
             extractor.parameters(), lr=1e-4, eps=1e-5, weight_decay=1e-5)
-        return extractor, extractor_optim
+        extractor_scheduler = StepLR.MultiStepLR(
+            extractor_optim,
+            milestones=[30, 80, 120],
+            gamma=0.5,
+        )
+        return extractor, extractor_optim, extractor_scheduler
 
     def get_match_scores(self, action):
         # compute similarity probability based on L2 norm
@@ -181,7 +188,6 @@ class AgentWrapper(object):
 
         expert_batch_size = batch_size if not ratio else int(batch_size * ratio)
         policy_batch_size = batch_size - expert_batch_size
-
         for _ in range(self.cvae_loop_time):
             ####################################################################################
             # The return of ray.get([self.replay_buffer_id.sample.remote(batch_size)])
@@ -190,12 +196,12 @@ class AgentWrapper(object):
             if sample:
                 (pc_state, joint_state, conti_action,
                  conti_para, next_pc_state, next_joint_state,
-                 reward, done) = ray.get([self.replay_buffer_id.sample.remote(expert_batch_size)])[0]
+                 reward, done, success) = ray.get([self.replay_buffer_id.sample.remote(expert_batch_size)])[0]
 
                 if policy_batch_size > 0:
                     (policy_pc_state, policy_joint_state, policy_conti_action,
                      policy_conti_para, policy_next_pc_state, policy_next_joint_state,
-                     policy_reward, policy_done) = ray.get([self.replay_buffer_id.sample.remote(policy_batch_size)])[0]
+                     policy_reward, policy_done, policy_success) = ray.get([self.online_replay_buffer_id.sample.remote(policy_batch_size)])[0]
 
                     # combine the datas
                     pc_state = np.concatenate((pc_state, policy_pc_state), axis=0)
@@ -206,6 +212,7 @@ class AgentWrapper(object):
                     next_joint_state = np.concatenate((next_joint_state, policy_next_joint_state), axis=0)
                     reward = np.concatenate((reward, policy_reward), axis=0)
                     done = np.concatenate((done, policy_done), axis=0)
+                    success = np.concatenate((success, policy_success), axis=0)
                 # # visualize to see if something wrong
                 # vis_pc = pc_state[0, :, :3]
                 # point_cloud = o3d.geometry.PointCloud()
@@ -224,28 +231,33 @@ class AgentWrapper(object):
                 self.next_joint_state = self.prepare_data(next_joint_state)
                 self.reward = self.prepare_data(reward)
                 self.done = self.prepare_data(done)
+                self.success = self.prepare_data(success)
 
             self.all_feat = self.get_feature_for_encoder(self.pc_state, self.joint_state)
             (self.action_recon, self.manipulator_next,
              self.action_z, self.mean, self.log_std) = self.cvae(self.all_feat, self.conti_action)
 
-            con_recon_loss = F.mse_loss(self.conti_action, self.action_recon)
-            # print(f"(conti_action: {self.conti_action} action_recon: {self.action_recon}")
-            # print(f"mean: {self.mean}, log_std: {self.log_std}")
+            con_recon_loss = F.mse_loss(self.action_recon, self.conti_action)
+            # print(f"(conti_action: {self.conti_action[:4, :]} action_recon: {self.action_recon[:4, :]}")
+            # print(f"mean: {self.mean}, log_std: {self.log_std}, self.action_z: {self.action_z[0, :]}")
             kl_loss = self.kl_divergence_loss(self.mean, self.log_std)
             gripper_pre_loss = F.mse_loss(self.next_pc_state[:, -3:, :3], self.manipulator_next[:, -3:, :3])
             manipulator_pre_loss = F.mse_loss(self.next_pc_state[:, -10:, :3], self.manipulator_next[:, -10:, :3])
-            self.beta, _ = self.PIDControl.pid(30, kl_loss.item(), Kp=0.01, Ki=(-0.00001), Kd=0.)
-            # print(f"beta: {self.beta}")
-            # print(f"kl_loss: {kl_loss.item()}")
-            total_loss = 500 * con_recon_loss + self.beta * kl_loss + 1 * gripper_pre_loss + 1 * manipulator_pre_loss
-            # total_loss = 1000 * con_recon_loss + self.beta * kl_loss
+            # self.beta, _ = self.PIDControl.pid(30, kl_loss.item(), Kp=0.00008, Ki=(-0.00000005), Kd=-0.00000)
+            # self.beta, _ = self.PIDControl.pid(15, kl_loss.item(), Kp=0.00001, Ki=(-0.000000005), Kd=-0.00000)
+            self.beta, _ = self.PIDControl.pid(15, kl_loss.item(), Kp=0.01, Ki=(-0.0001), Kd=0.)
+            print(f"!!!!!!!!!!!!!!!!!!beta: {self.beta}")
+            print(f"kl_loss: {kl_loss.item()}")
+            # total_loss = 5 * con_recon_loss + self.beta * kl_loss + 1 * gripper_pre_loss + 1 * manipulator_pre_loss
+            total_loss = 1e5 * con_recon_loss + self.beta * kl_loss + 1e4 * gripper_pre_loss
 
             self.encoder_feat_extractor_optim.zero_grad()
             self.cvae_optim.zero_grad()
             total_loss.backward()
             self.cvae_optim.step()
             self.encoder_feat_extractor_optim.step()
+            self.cvae_scheduler.step()
+            self.encoder_feat_extractor_scheduler.step()
 
             con_recon_loss_list.append(con_recon_loss.detach().cpu().numpy())
             kl_loss_list.append(kl_loss.detach().cpu().numpy())
@@ -265,13 +277,13 @@ class AgentWrapper(object):
 
     def kl_divergence_loss(self, mean, log_std):
         # # Compute the element-wise KL divergence for each sample
-        # kl_loss = -0.5 * torch.sum(1 + 2 * log_std - mean**2 - torch.exp(2 * log_std), dim=1)
-
-        # # Compute the mean over the batch
-        # kl_loss = torch.mean(kl_loss)
-
+        # kl_loss_ori = -0.5 * torch.sum(1 + 2 * log_std - mean**2 - torch.exp(2 * log_std), dim=1)
+        # # # Compute the mean over the batch
+        # kl_loss_ori = torch.mean(kl_loss_ori)
+        # print(f"kl_loss_ori: {kl_loss_ori}")
         klds = -0.5 * (1 + log_std - mean.pow(2) - log_std.exp())
         kl_loss = klds.sum(1).mean(0, True)
+        # print(f"kl_loss: {kl_loss}")
         return kl_loss
 
     def critic_train(self, batch_size, timestep, ratio=None):
@@ -314,11 +326,11 @@ class AgentWrapper(object):
             if expert_batch_size > 0:
                 (pc_state, joint_state, conti_action, conti_para,
                  next_pc_state, next_joint_state,
-                 reward, done) = ray.get([self.replay_buffer_id.sample.remote(expert_batch_size)])[0]
+                 reward, done, success) = ray.get([self.replay_buffer_id.sample.remote(expert_batch_size)])[0]
             if policy_batch_size > 0:
                 (policy_pc_state, policy_joint_state, policy_conti_action, policy_conti_para,
                  policy_next_pc_state, policy_next_joint_state,
-                 policy_reward, policy_done) = ray.get([self.replay_buffer_id.sample.remote(policy_batch_size)])[0]
+                 policy_reward, policy_done, policy_success) = ray.get([self.online_replay_buffer_id.sample.remote(policy_batch_size)])[0]
 
                 # combine the datas, not sure why some of data need to use concatenate rather than vstack
                 pc_state = np.concatenate((pc_state, policy_pc_state), axis=0)
@@ -329,6 +341,7 @@ class AgentWrapper(object):
                 next_joint_state = np.concatenate((next_joint_state, policy_next_joint_state), axis=0)
                 reward = np.concatenate((reward, policy_reward), axis=0)
                 done = np.concatenate((done, policy_done), axis=0)
+                success = np.concatenate((success, policy_success), axis=0)
 
             self.pc_state = self.prepare_data(pc_state)
             self.joint_state = self.prepare_data(joint_state)
@@ -338,6 +351,7 @@ class AgentWrapper(object):
             self.next_joint_state = self.prepare_data(next_joint_state)
             self.reward = self.prepare_data(reward)
             self.done = self.prepare_data(done)
+            self.success = self.prepare_data(success)
 
             with torch.no_grad():
 
@@ -366,6 +380,8 @@ class AgentWrapper(object):
             critic_loss.backward()
             self.critic_optim.step()
             self.policy_feat_extractor_optim.step()
+            self.critic_scheduler.step()
+            self.policy_feat_extractor_scheduler.step()
 
             critic_loss_list.append(critic_loss.detach().cpu().numpy())
             # Delayed Actor update
@@ -390,11 +406,12 @@ class AgentWrapper(object):
 
                 # combine all loss
                 # all_policy_loss = policy_loss + 1.2 * bc_loss + terminal_loss
-                all_policy_loss = policy_loss + 15 * bc_loss
+                all_policy_loss = policy_loss + 1e3 * bc_loss
 
                 self.policy_optim.zero_grad()
                 all_policy_loss.backward()
                 self.policy_optim.step()
+                self.policy_scheduler.step()
                 self.critic_optim.zero_grad()
 
                 # Update target networks with Polyak averaging
@@ -431,13 +448,13 @@ class AgentWrapper(object):
     def get_target_q_value(self, next_all_feat):
         with torch.no_grad():
             conti_emb = self.policy_target(next_all_feat)
-            # Add noise to continuous action
-            noise = (torch.randn_like(conti_emb)*self.noise_scale).clamp(-self.noise_clip, self.noise_clip).to(self.device)
+            # Add noise to continuous action, range from -self.noise_scale to self.noise_scale 
+            noise = (torch.randn_like(conti_emb)*self.noise_scale).to(self.device)
             # noisy_conti_action = torch.clamp(conti_action + noise, -self.noise_clip, self.noise_clip)
             noisy_conti_emb = (conti_emb + noise).clamp(-1, 1)
-
             q1, q2, _ = self.critic_target(next_all_feat, noisy_conti_emb)
-            target_q_value = torch.min(q1, q2)
+            target_q_value = torch.min(q1, q2).squeeze()
+
         return target_q_value
 
     def soft_update(self, source, target, tau):
@@ -503,7 +520,7 @@ class AgentWrapper(object):
         all_data_num = sample_time * batch_size
         for i in range(sample_time):
             (pc_state, joint_state, conti_action,
-                conti_para, next_pc_state, _, _, _) = ray.get([self.replay_buffer_id.sample.remote(batch_size)])[0]
+                conti_para, next_pc_state, _, _, _, _) = ray.get([self.replay_buffer_id.sample.remote(batch_size)])[0]
             pc_state_tmp = self.prepare_data(pc_state)
             joint_state_tmp = self.prepare_data(joint_state)
             conti_action_tmp = self.prepare_data(conti_action)
