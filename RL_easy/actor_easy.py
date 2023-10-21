@@ -163,6 +163,7 @@ class ActorWrapper(object):
         self.obstacle_points = None
         done = 0
         reward = 0
+        success = 0
         movement_num = 0
         pos, ori = p.getBasePositionAndOrientation(self.env._objectUids[self.env.target_idx])
         fixed_joint_constraint = p.createConstraint(
@@ -228,6 +229,7 @@ class ActorWrapper(object):
             if orientation > 0.8 and distance < 0.35:
                 reward = 1
                 done = 1
+                success = 1
             # elif orientation < 0:
             #     reward = -1
             #     done = 1
@@ -241,15 +243,17 @@ class ActorWrapper(object):
              next_pc_state, next_joint_state,
              reward, done) = data_list[i]
 
+            #Be careful, varible "success" is not in list 
             ray.get([self.online_buffer_id.add.remote(pc_state, joint_state, conti_action[:6], conti_para,
-                                                      next_pc_state, next_joint_state, reward, done)])
+                                                      next_pc_state, next_joint_state, reward, done, success)])
         p.removeConstraint(fixed_joint_constraint)
         self.env.place_back_objects()
         return (1, reward)
 
     def expert_move(self, vis=False):
-        # data_list is for store data, in order to save successful grasp process only
+        # data_list is for store data
         data_list = []
+        success = 0
         self.target_points = None
         self.obstacle_points = None
         pos, ori = p.getBasePositionAndOrientation(self.env._objectUids[self.env.target_idx])
@@ -302,7 +306,7 @@ class ActorWrapper(object):
             next_distance = self.get_distance(next_manipulator_points[-3:, :3], next_manipulator_points[:, :3])
             con_action = next_joint_state - joint_state
             dis_reward = distance - next_distance
-
+            
             conti_para = ray.get([self.policy_id.get_conti_para.remote(pc_state, joint_state,
                                                                                  con_action)])[0]
 
@@ -318,6 +322,7 @@ class ActorWrapper(object):
                 orientation = self.get_orientation(next_manipulator_points[-3:, :3], next_target_points[:, :3])
                 distance = self.get_distance(next_manipulator_points[-3:, :3], next_target_points[:, :3])
                 if orientation > 0.8 and distance < 0.35:
+                    success = 1
                     reward = 1
                 done = 1
             else:
@@ -369,21 +374,14 @@ class ActorWrapper(object):
         #                       next_pc_state, next_joint_state, reward, done))
 
 
-        if data_list[-1][-2] == 1:
-            # store successful process into buffer
-            for i in range(len(data_list)):
-                (pc_state, joint_state, con_action, conti_para, next_pc_state,
-                 next_joint_state, reward, done) = data_list[i]
-                ray.get([self.buffer_id.add.remote(pc_state, joint_state, con_action,
-                                                   conti_para, next_pc_state,
-                                                   next_joint_state, reward, done)])
-        else:
-            # store fail process into online_buffer
-            for i in range(len(data_list)):
-                (pc_state, joint_state, con_action, conti_para,
-                 next_pc_state, next_joint_state, reward, done) = data_list[i]
-                ray.get([self.online_buffer_id.add.remote(pc_state, joint_state, con_action, conti_para, next_pc_state,
-                                                          next_joint_state, reward, done)])
+        # store process into buffer
+        for i in range(len(data_list)):
+            (pc_state, joint_state, con_action, conti_para, next_pc_state,
+                next_joint_state, reward, done) = data_list[i]
+            ray.get([self.buffer_id.add.remote(pc_state, joint_state, con_action,
+                                                conti_para, next_pc_state,
+                                                next_joint_state, reward, done, success)])
+
         p.removeConstraint(fixed_joint_constraint)
         self.env.place_back_objects()
         return (0, reward)
@@ -432,7 +430,7 @@ class ActorWrapper(object):
         return target_points
 
     def get_joint_degree(self):
-        con_action = p.getJointStates(self.env._panda.pandaUid, [i for i in range(6)])
+        con_action = p.getJointStates(self.env._panda.pandaUid, [i for i in range(1, 7)])
         con_action = np.array([i[0] for i in con_action])
         return con_action
 
@@ -479,14 +477,6 @@ class ActorWrapper(object):
         self.target_points = target_points
         self.obstacle_points = obstacle_points
 
-        if vis:
-            target_o3d_pc = o3d.geometry.PointCloud()
-            target_o3d_pc.points = o3d.utility.Vector3dVector(target_points)
-            obstacle_o3d_pc = o3d.geometry.PointCloud()
-            obstacle_o3d_pc.points = o3d.utility.Vector3dVector(obstacle_points)
-            axis_pcd = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
-            o3d.visualization.draw_geometries([obstacle_o3d_pc]+[target_o3d_pc]+[axis_pcd])
-
         if target_points is None or obstacle_points is None:
             return None, None, None
         obstacle_points = np.hstack((obstacle_points, np.zeros((obstacle_points.shape[0], 1))))
@@ -498,6 +488,19 @@ class ActorWrapper(object):
             all_pc, manipulator_points = self.get_gripper_points(target_points)
         # if target_points is None or obstacle_points is None:
         #     return None, None, None, None
+                # # transform back to camera frame
+        all_pc = self.base2camera(all_pc)
+        target_points = self.base2camera(target_points)
+        manipulator_points = self.base2camera(manipulator_points)
+
+        if vis:
+            target_o3d_pc = o3d.geometry.PointCloud()
+            target_o3d_pc.points = o3d.utility.Vector3dVector(target_points)
+            obstacle_o3d_pc = o3d.geometry.PointCloud()
+            obstacle_o3d_pc.points = o3d.utility.Vector3dVector(obstacle_points)
+            axis_pcd = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
+            o3d.visualization.draw_geometries([obstacle_o3d_pc]+[target_o3d_pc]+[axis_pcd])
+
         return all_pc, target_points, manipulator_points
 
     def get_distance(self, source_cloud, target_cloud):
@@ -546,6 +549,15 @@ class ActorWrapper(object):
                 return True
         return False
 
+    def base2camera(self, pointcloud):
+        inverse_camera_matrix = np.linalg.inv(self.env.cam_offset)
+        inverse_ef_pose_matrix = np.linalg.inv(self.env._get_ef_pose('mat'))
+        original_fourth_column = pointcloud[:, 3].copy()
+        pointcloud[:, 3] = 1
+        pointcloud_ef_pose = np.dot(inverse_ef_pose_matrix, pointcloud.T).T[:, :3]
+        pointcloud_camera = np.dot(inverse_camera_matrix, np.hstack((pointcloud_ef_pose, np.ones((pointcloud_ef_pose.shape[0], 1)))).T).T
+        pointcloud_camera[:, 3] = original_fourth_column
+        return pointcloud_camera
 
 @ray.remote(num_cpus=1, num_gpus=0.12)
 class ActorWrapper012(ActorWrapper):
