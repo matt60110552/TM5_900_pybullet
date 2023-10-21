@@ -324,7 +324,7 @@ class SimulatedYCBEnv():
 
         return None  # observation
 
-    def step(self, action, delta=False, obs=True, repeat=150, config=False, vis=False):
+    def step(self, action, delta=False, obs=True, repeat=200, config=False, vis=False):
         """
         Environment step.
         """
@@ -537,6 +537,7 @@ class SimulatedYCBEnv():
         if config:
             if delta:
                 cur_joint = np.array(self._panda.getJointStates()[0])
+
                 action = cur_joint + action
         else:
             pos, orn = p.getLinkState(self._panda.pandaUid, self._panda.pandaEndEffectorIndex)[4:6]
@@ -864,7 +865,7 @@ class SimulatedYCBEnv():
         end effector pose in world frame
         """
         if not mat:
-            return p.getLinkState(self._panda.pandaUid, self._panda.pandaEndEffectorIndex)[4:6]
+            return p.getLinkState(self._panda.pandaUid, self._panda.pandaEndEffectorIndex)[4:6]  # return orn: x, y, z, w
         else:
             pos, orn = p.getLinkState(self._panda.pandaUid, self._panda.pandaEndEffectorIndex)[4:6]
             return unpack_pose(list(pos) + [orn[3], orn[0], orn[1], orn[2]])
