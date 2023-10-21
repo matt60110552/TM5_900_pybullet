@@ -18,8 +18,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Paper: https://arxiv.org/abs/1802.09477
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 parser = argparse.ArgumentParser(description="Description of your script.")
-parser.add_argument("--cvae_train_times", type=int, default=3000, help="How many time should cvae train")
-parser.add_argument("--policy_train_times", type=int, default=3000, help="How many time should cvae and policy train")
+parser.add_argument("--cvae_train_times", type=int, default=1000, help="How many time should cvae train")
+parser.add_argument("--policy_train_times", type=int, default=1000, help="How many time should cvae and policy train")
 parser.add_argument("--cvae_save_frequency", type=int, default=100, help="How many steps cvae take to save once")
 parser.add_argument("--policy_save_frequency", type=int, default=50, help="How many steps policy take to save once")
 parser.add_argument("--buffer_save_frequency", type=int, default=10, help="How many steps buffer take to save once")
@@ -60,7 +60,7 @@ if __name__ == "__main__":
                                             batch_size=batch_size)
         actor_ids = [ActorWrapper012.remote(replay_online_buffer_id, replay_buffer_id, rollout_agent_id,
                                             renders=visual, scene_level=scene_level) for _ in range(actor_num)]
-        current_file_path = os.path.abspath(__file__).replace('/train_pipeline_easy.py', '/')
+        current_file_path = os.path.abspath(__file__).replace('/train_pipeline_plain.py', '/')
         current_datetime = datetime.datetime.now().strftime('%Y-%m-%d_%H')
 
         checkpoint_path = os.path.join(current_file_path, 'checkpoints')
@@ -93,39 +93,39 @@ if __name__ == "__main__":
         writer = SummaryWriter(save_log_path)
 
         for _ in range(args.warmup_times):
-            ray.get([actor.rollout_once.remote() for actor in actor_ids])
+            ray.get([actor.rollout_once.remote(vis=True) for actor in actor_ids])
 
         for _ in range(args.warmup_times):
             ray.get([actor.rollout_once.remote(mode="onpolicy", explore_ratio=1) for actor in actor_ids])
 
 
-        for i in range(cvae_train_times):
-            roll = []
-            roll.extend([actor.rollout_once.remote() for actor in actor_ids])
-            roll.extend([learner_id.cvae_train.remote(batch_size, timestep, cvae_train_times)])
-            result = ray.get(roll)
-            con_recon_loss, kl_loss, gripper_pre_loss, manipulator_pre_loss = result[-1]
-            writer.add_scalar("con_recon_loss", con_recon_loss, timestep)
-            writer.add_scalar("kl_loss", kl_loss, timestep)
-            writer.add_scalar("gripper_pre_loss", gripper_pre_loss, timestep)
-            writer.add_scalar("manipulator_pre_loss", manipulator_pre_loss, timestep)
-            if timestep % cvae_save_frequency == 0:
-                filename = save_checkpoint_path + "/cvae_" + str(timestep)
-                ray.get([learner_id.save.remote(filename, timestep)])
-            if timestep % buffer_save_frequency == 0:
-                filename = save_npz_data_path + "/expert"
-                ray.get([replay_buffer_id.save_data.remote(filename)])
-            timestep += 1
-        print(f"cvae finished!!!", end="\n\n")
+        # for i in range(cvae_train_times):
+        #     roll = []
+        #     roll.extend([actor.rollout_once.remote() for actor in actor_ids])
+        #     roll.extend([learner_id.cvae_train.remote(batch_size, timestep, cvae_train_times)])
+        #     result = ray.get(roll)
+        #     con_recon_loss, kl_loss, gripper_pre_loss, manipulator_pre_loss = result[-1]
+        #     writer.add_scalar("con_recon_loss", con_recon_loss, timestep)
+        #     writer.add_scalar("kl_loss", kl_loss, timestep)
+        #     writer.add_scalar("gripper_pre_loss", gripper_pre_loss, timestep)
+        #     writer.add_scalar("manipulator_pre_loss", manipulator_pre_loss, timestep)
+        #     if timestep % cvae_save_frequency == 0:
+        #         filename = save_checkpoint_path + "/cvae_" + str(timestep)
+        #         ray.get([learner_id.save.remote(filename, timestep)])
+        #     if timestep % buffer_save_frequency == 0:
+        #         filename = save_npz_data_path + "/expert"
+        #         ray.get([replay_buffer_id.save_data.remote(filename)])
+        #     timestep += 1
+        # print(f"cvae finished!!!", end="\n\n")
 
         # # assign the median and offset of the rollout_agent
         # ray.get([rollout_agent_id.get_median_offset.remote(batch_size)])
-        ray.get([learner_id.get_median_offset.remote(batch_size)])
+        # ray.get([learner_id.get_median_offset.remote(batch_size)])
         weight = ray.get([learner_id.get_weight.remote()])[0]
         ray.get([rollout_agent_id.load.remote(weight, dict=True)])
 
-        for _ in range(args.warmup_times):
-            ray.get([actor.rollout_once.remote(mode="onpolicy", explore_ratio=1) for actor in actor_ids])
+        # for _ in range(args.warmup_times):
+        #     ray.get([actor.rollout_once.remote(mode="onpolicy", explore_ratio=1) for actor in actor_ids])
 
         # buffer_size1 = ray.get([replay_buffer_id.get_size.remote()])
         # buffer_size2 = ray.get([replay_online_buffer_id.get_size.remote()])
@@ -133,15 +133,16 @@ if __name__ == "__main__":
         # print(f"buffer_size2: {buffer_size2}")
 
         for i in range(policy_train_times):
-            data_ratio = max(0.1, min(0.5, 1 - i/policy_train_times))
-            explore_ratio = max(1 - (3*i)/(2*policy_train_times), 0)
+            data_ratio = max(0., min(0.8, i/policy_train_times))
+            explore_ratio = max(1 - (2*i)/(policy_train_times), 0.1)
+            print(f"!!!!!!!!explore_ratio: {explore_ratio}")
             roll = []
             roll.extend([actor.rollout_once.remote(mode="both", explore_ratio=explore_ratio) for actor in actor_ids])
             roll.extend([learner_id.critic_train.remote(batch_size, timestep, ratio=data_ratio)])
             roll.extend([rollout_agent_id.load.remote(weight, dict=True)])
             roll.extend([learner_id.get_weight.remote()])
             result = ray.get(roll)
-            critic_loss, policy_loss, bc_loss = result[-3]
+            critic_loss, policy_loss, bc_loss, terminal_loss = result[-3]
             weight = result[-1]
 
             # get the total reward value of policy move for observation
@@ -156,7 +157,7 @@ if __name__ == "__main__":
             if policy_loss is not None:
                 writer.add_scalar("policy_loss", policy_loss, timestep)
                 writer.add_scalar("bc_loss", bc_loss, timestep)
-                # writer.add_scalar("terminal_loss", terminal_loss, timestep)
+                writer.add_scalar("terminal_loss", terminal_loss, timestep)
             if timestep % policy_save_frequency == 0:
                 filename = save_checkpoint_path + "/cvae_" + str(cvae_train_times) + "policy_" + str(timestep - cvae_train_times)
                 ray.get([learner_id.save.remote(filename, timestep)])
@@ -179,7 +180,7 @@ if __name__ == "__main__":
                                                     scene_level=scene_level)
         actor_ids = [ActorWrapper012.remote(replay_online_buffer_id, replay_buffer_id, rollout_agent_id,
                                             renders=True, scene_level=scene_level) for _ in range(actor_num)]
-        current_file_path = os.path.abspath(__file__).replace('/train_pipeline_easy.py', '/')
+        current_file_path = os.path.abspath(__file__).replace('/train_pipeline_plain.py', '/')
         checkpoint_path = os.path.join(current_file_path, 'checkpoints')
         # npz_data_path = os.path.join(current_file_path, 'npz_data')
         npz_data_path = os.path.join(current_file_path, 'npz_data/scene_level') if scene_level else os.path.join(current_file_path, 'npz_data/object_level')
@@ -189,13 +190,13 @@ if __name__ == "__main__":
         else:
             raise ValueError("please input load filename")
 
-        if load_memory:
-            if (os.path.isfile(npz_data_path + "/" + "expert.npz") and
-                os.path.isfile(npz_data_path + "/" + "on_policy.npz")):
-                roll = []
-                roll.extend([replay_buffer_id.load_data.remote(npz_data_path + "/" + "expert.npz")])
-                roll.extend([replay_online_buffer_id.load_data.remote(npz_data_path + "/" + "on_policy.npz")])
-                ray.get(roll)
+        # if load_memory:
+        #     if (os.path.isfile(npz_data_path + "/" + "expert.npz") and
+        #         os.path.isfile(npz_data_path + "/" + "on_policy.npz")):
+        #         roll = []
+        #         roll.extend([replay_buffer_id.load_data.remote(npz_data_path + "/" + "expert.npz")])
+        #         roll.extend([replay_online_buffer_id.load_data.remote(npz_data_path + "/" + "on_policy.npz")])
+        #         ray.get(roll)
 
         # # assign the median and offset of the rollout_agent
         # ray.get([rollout_agent_id.get_median_offset.remote(batch_size)])

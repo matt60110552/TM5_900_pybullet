@@ -142,12 +142,12 @@ class QNetwork(nn.Module):
         The two below is for dis_action(64) and conti_action(64)
         """
         # Q1 architecture
-        self.linear1 = nn.Linear(num_inputs + latent_size, hidden_dim)
+        self.linear1 = nn.Linear(num_inputs + 6, hidden_dim)
         self.linear2 = nn.Linear(hidden_dim, hidden_dim)
         self.linear3 = nn.Linear(hidden_dim, 1)
 
         # Q2 architecture
-        self.linear4 = nn.Linear(num_inputs + latent_size, hidden_dim)
+        self.linear4 = nn.Linear(num_inputs + 6, hidden_dim)
         self.linear5 = nn.Linear(hidden_dim, hidden_dim)
         self.linear6 = nn.Linear(hidden_dim, 1)
 
@@ -189,20 +189,22 @@ class GaussianPolicy(nn.Module):
         self.max_action = max_action
 
         # self.discrete = nn.Linear(hidden_dim, latent_size)
-        self.conti = nn.Linear(hidden_dim, latent_size)
-        # self.max_joint_limit = torch.tensor([0.1, 0.1, 0.1, 0.1, 0.1, 0.1]).to(self.device)
+        self.conti = nn.Linear(hidden_dim, 6)
+        self.discre = nn.Linear(hidden_dim, 1)
+        self.max_joint_limit = torch.tensor([0.1, 0.1, 0.1, 0.1, 0.1, 0.1]).to(self.device)
         self.apply(weights_init_)
 
     def forward(self, state):
 
-        x = F.relu(self.linear1(state))
-        x = F.relu(self.linear2(x))
-        x = F.relu(self.linear3(x))
+        x1 = F.relu(self.linear1(state))
+        x2 = F.relu(self.linear2(x1))
+        x3 = F.relu(self.linear3(x2))
 
-        continue_emb = self.max_action * torch.tanh(self.conti(x))
+        conti_action = self.max_action * torch.tanh(self.conti(x3)) * self.max_joint_limit
+        dis_action = torch.tanh(self.discre(x3))
         # discrete_action = self.max_action * torch.tanh(self.discrete(x))
         # return discrete_action, continue_action
-        return continue_emb
+        return conti_action, dis_action
 
 
 class ConditionalPredictNetwork(nn.Module):

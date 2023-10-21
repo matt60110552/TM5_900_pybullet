@@ -189,7 +189,7 @@ class ActorWrapper(object):
 
             joint_state = self.get_joint_degree()
             # get action from policy
-            conti_action = ray.get([self.policy_id.select_action.remote(pc_state, joint_state, explore_ratio)])[0]
+            conti_action, dis_action = ray.get([self.policy_id.select_action.remote(pc_state, joint_state, explore_ratio)])[0]
             # print(f">>>>>>>>>>>>>>>>>>>>>>>>conti_para: {conti_para}")
             conti_action = np.append(conti_action, 0)
 
@@ -211,40 +211,53 @@ class ActorWrapper(object):
                 axis_pcd = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
                 o3d.visualization.draw_geometries([point_cloud] + [axis_pcd])
 
-            if movement_num > 30:
+            if dis_action >= 0.:
+                """
+                try to lift the target object
+                """
+                cur_joint = np.array(self.env._panda.getJointStates()[0])
+                cur_joint[-1] = 0.8  # close finger
+                # observations = [self.env.step(cur_joint, repeat=300, config=True, vis=False)[0]]
+                obs = self.env.step(cur_joint, repeat=300, config=True, vis=False)
+
+                # release the constraint of the target object
                 p.removeConstraint(fixed_joint_constraint)
+                # get the pc_state after close the gripper
+                next_pc_state, next_target_points, next_manipulator_points = self.get_pc_state()
+
+                done = 1
+                pos, orn = p.getLinkState(self.env._panda.pandaUid, self.env._panda.pandaEndEffectorIndex)[4:6]
+
+                # lifting part
+                for i in range(10):
+                    pos = (pos[0], pos[1], pos[2] + 0.03)
+                    jointPoses = np.array(p.calculateInverseKinematics(self.env._panda.pandaUid,
+                                                                       self.env._panda.pandaEndEffectorIndex, pos,
+                                                                       maxNumIterations=500,
+                                                                       residualThreshold=1e-8))
+                    jointPoses[6] = 0.8
+                    jointPoses = jointPoses[:7].copy()
+
+                    obs = self.env.step(jointPoses, config=True)[0]
+
+                    """visdom part visualize the image of the process"""
+                    self.vis.image(obs[0][1][:3].transpose(0, 2, 1), win=self.win_id, opts={"title": "policy"})
+
+                if self.env.target_lifted():
+                    reward = 1
+            if movement_num == 25:
                 done = 1
 
-            # # colision checking to avoid self collision
-            # if self.collision_check():
-            #     p.removeConstraint(fixed_joint_constraint)
-            #     reward = -1
-            #     done = 1
-
-            orientation = self.get_orientation(next_manipulator_points[-3:, :3], next_target_points[:, :3])
-            distance = self.get_distance(next_manipulator_points[-3:, :3], next_target_points[:, :3])
-            if orientation > 0.75 and distance < 0.35:
-                reward += 1
-                done = 1
-                print(f"congradulation!!!! policy reached the goal@@@@@@@@@@@")
-            # elif orientation > 0.8 and distance < 0.5:
-            #     reward += 0.05
-            #     print(f"congradulation!!!! policy close to the goal@@@@@@@@@@@@@@@")
-            # elif orientation < 0:
-            #     reward = -1
-            #     done = 1
-
-
-            data_list.append((pc_state, joint_state, conti_action[:6],
+            data_list.append((pc_state, joint_state, conti_action[:6], dis_action,
                               next_pc_state, next_joint_state, reward, done))
 
         for i in range(len(data_list)):
-            (pc_state, joint_state, conti_action[:6],
+            (pc_state, joint_state, conti_action[:6], dis_action,
              next_pc_state, next_joint_state,
              reward, done) = data_list[i]
 
             ray.get([self.online_buffer_id.add.remote(pc_state, joint_state, conti_action[:6],
-                                                      next_pc_state, next_joint_state, reward, done)])
+                                                      dis_action, next_pc_state, next_joint_state, reward, done)])
         p.removeConstraint(fixed_joint_constraint)
         self.env.place_back_objects()
         return (1, reward)
@@ -278,6 +291,8 @@ class ActorWrapper(object):
         path = self.expert_plan(grasp_pose, world=True)
 
         reward = 0
+        dis_action = -1
+        done = -1
         if path is None:
             return (0, 0)
         for i in range(len(path)):
@@ -313,28 +328,56 @@ class ActorWrapper(object):
             #     axis_pcd = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
             #     o3d.visualization.draw_geometries([point_cloud] + [axis_pcd])
             
-            done = 0
-            orientation = self.get_orientation(next_manipulator_points[-3:, :3], next_target_points[:, :3])
-            distance = self.get_distance(next_manipulator_points[-3:, :3], next_target_points[:, :3])
-            if orientation > 0.75 and distance < 0.35:
-                reward += 1
-                done = 1
-                print(f"congradulation!!!! expert reached the goal>>>>>>>>>>>>")
-            # elif orientation > 0.8 and distance < 0.5:
-            #     reward += 0.05
-            #     print(f"congradulation!!!! policy close to the goal>>>>>>>>>>>>")
-            if i == len(path)-1:
-                done = 1
-            # else:
-            #     done = 0
-            data_list.append((pc_state, joint_state, con_action,
+            # done = 0
+            # orientation = self.get_orientation(next_manipulator_points[-3:, :3], next_target_points[:, :3])
+            # distance = self.get_distance(next_manipulator_points[-3:, :3], next_target_points[:, :3])
+            # if orientation > 0.65 and distance < 0.25:
+            #     reward += 1
+            #     done = 1
+            #     print(f"congradulation!!!! expert reached the goal>>>>>>>>>>>>")
+            # # elif orientation > 0.8 and distance < 0.5:
+            # #     reward += 0.05
+            # #     print(f"congradulation!!!! policy close to the goal>>>>>>>>>>>>")
+            # if i == len(path)-1:
+            #     if distance  < 0.3 and orientation > 0 and reward == 0:
+            #         reward += 0.05
+            #     elif orientation < 0 and reward == 0:
+            #         reward -= 0.1
+            #     done = 1
+            # # else:
+            # #     done = 0
+
+            data_list.append((pc_state, joint_state, con_action, dis_action,
                               next_pc_state, next_joint_state, reward, done))
 
             """visdom part visualize the image of the process"""
             self.vis.image(obs[0][1][:3].transpose(0, 2, 1), win=self.win_id, opts={"title": "expert"})
-            if done == 1:
-                break
 
+        for i in range(2):
+            # get the state
+            pc_state, target_points, manipulator_points = self.get_pc_state()
+            joint_state = self.get_joint_degree()
+            dis_action = 0
+
+            obs = self.env.step(action=np.array([0, 0, 0.015, 0, 0, 0]))[0]
+            
+            """visdom part visualize the image of the process"""
+            self.vis.image(obs[0][1][:3].transpose(0, 2, 1), win=self.win_id, opts={"title": "expert"})
+
+            # get next state and done and reward
+            next_pc_state, next_target_points, next_manipulator_points = self.get_pc_state()
+            next_joint_state = self.get_joint_degree()
+            con_action = next_joint_state - joint_state
+            reward = 0
+            done = 0
+            if i == 1:
+                done = 1
+                dis_action = 1
+                p.removeConstraint(fixed_joint_constraint)
+                reward = self.env.retract()
+
+            data_list.append((pc_state, joint_state, con_action, dis_action,
+                              next_pc_state, next_joint_state, reward, done))
             # check for pointcloud
             # vis_pc = pc_state[:, :3]
             # point_cloud = o3d.geometry.PointCloud()
@@ -343,9 +386,9 @@ class ActorWrapper(object):
             # o3d.visualization.draw_geometries([point_cloud] + [axis_pcd])
 
         for i in range(len(data_list)):
-            (pc_state, joint_state, con_action, next_pc_state,
+            (pc_state, joint_state, con_action, dis_action, next_pc_state,
                 next_joint_state, reward, done) = data_list[i]
-            ray.get([self.buffer_id.add.remote(pc_state, joint_state, con_action,
+            ray.get([self.buffer_id.add.remote(pc_state, joint_state, con_action, dis_action,
                                                 next_pc_state, next_joint_state, reward, done)])
         # else:
         #     # store fail process into online_buffer
@@ -393,7 +436,7 @@ class ActorWrapper(object):
         return target_points
 
     def get_joint_degree(self):
-        con_action = p.getJointStates(self.env._panda.pandaUid, [i for i in range(6)])
+        con_action = p.getJointStates(self.env._panda.pandaUid, [i for i in range(1, 7)])
         con_action = np.array([i[0] for i in con_action])
         return con_action
 
