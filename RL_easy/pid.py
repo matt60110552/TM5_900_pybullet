@@ -24,13 +24,13 @@ class PIDControl():
         ## comput U as the control factor
         Pk = Kp * self._Kp_fun(error_k)
         Ik = self.I_k1 + Ki * error_k
-        # Dk = (error_k - self.e_k1) * Kd
+        Dk = (error_k - self.e_k1) * Kd
         
         ## window up for integrator
         if self.W_k1 < 0 and self.W_k1 >= 1:
             Ik = self.I_k1
         
-        Wk = Pk + Ik
+        Wk = Pk + Ik + Dk
         self.W_k1 = Wk
         self.I_k1 = Ik
         self.e_k1 = error_k
