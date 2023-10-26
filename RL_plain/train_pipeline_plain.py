@@ -61,7 +61,7 @@ if __name__ == "__main__":
         actor_ids = [ActorWrapper012.remote(replay_online_buffer_id, replay_buffer_id, rollout_agent_id,
                                             renders=visual, scene_level=scene_level) for _ in range(actor_num)]
         current_file_path = os.path.abspath(__file__).replace('/train_pipeline_plain.py', '/')
-        current_datetime = datetime.datetime.now().strftime('%Y-%m-%d_%H')
+        current_datetime = datetime.datetime.now().strftime('%Y-%m-%d_%H_%M')
 
         checkpoint_path = os.path.join(current_file_path, 'checkpoints')
         # Create a folder for logs using the formatted datetime
@@ -98,7 +98,6 @@ if __name__ == "__main__":
         for _ in range(args.warmup_times):
             ray.get([actor.rollout_once.remote(mode="onpolicy", explore_ratio=1) for actor in actor_ids])
 
-
         # for i in range(cvae_train_times):
         #     roll = []
         #     roll.extend([actor.rollout_once.remote() for actor in actor_ids])
@@ -133,9 +132,11 @@ if __name__ == "__main__":
         # print(f"buffer_size2: {buffer_size2}")
 
         for i in range(policy_train_times):
-            data_ratio = max(0., min(0.8, i/policy_train_times))
+            # data_ratio = max(0., min(0.8, 1-i/policy_train_times))
+            data_ratio = min(0.8, max(0., i/policy_train_times))
             explore_ratio = max(1 - (2*i)/(policy_train_times), 0.1)
             print(f"!!!!!!!!explore_ratio: {explore_ratio}")
+            print(f"!!!!!!!!data_ratio: {data_ratio}")
             roll = []
             roll.extend([actor.rollout_once.remote(mode="both", explore_ratio=explore_ratio) for actor in actor_ids])
             roll.extend([learner_id.critic_train.remote(batch_size, timestep, ratio=data_ratio)])
@@ -153,7 +154,7 @@ if __name__ == "__main__":
 
             writer.add_scalar("critic_loss", critic_loss, timestep)
             if len(policy_reward_list) > 0:
-                writer.add_scalar("policy_reward", sum(policy_reward_list)/len(policy_reward_list), timestep)
+                writer.add_scalar("policy_reward", sum(policy_reward_list), timestep)
             if policy_loss is not None:
                 writer.add_scalar("policy_loss", policy_loss, timestep)
                 writer.add_scalar("bc_loss", bc_loss, timestep)

@@ -9,6 +9,7 @@ import sys
 import ray
 import os
 import datetime
+from scipy.spatial import cKDTree
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
@@ -28,7 +29,8 @@ class ActorWrapper(object):
     """
     def __init__(self, online_buffer_id, buffer_id, policy_id, renders=False, scene_level=True):
         # from env.ycb_scene import SimulatedYCBEnv
-        file = os.path.join("object_index", 'acronym_90.json')
+        # file = os.path.join("object_index", 'acronym_90.json')
+        file = os.path.join("object_index", 'small_objects.json')
         with open(file) as f: file_dir = json.load(f)
         file_dir = file_dir['train']
         # file_dir = file_dir['test']
@@ -38,6 +40,7 @@ class ActorWrapper(object):
         self.env = SimulatedYCBEnv(renders=renders)
         self.env._load_index_objs(test_file_dir)
         self.env.reset(save=False, enforce_face_target=True)
+        # self.env.reset(save=False, enforce_face_target=True, furniture="cabinet")
         self.grasp_checker = ValidGraspChecker(self.env)
         self.planner = GraspPlanner()
         self.buffer_id = buffer_id
@@ -178,6 +181,7 @@ class ActorWrapper(object):
             )
         while not done:
             movement_num += 1
+            reward = 0
             pc_state, target_points, manipulator_points = self.get_pc_state()
             if target_points is None:
                 # print(f"target_points.shape[0]: {target_points.shape[0]}")
@@ -190,10 +194,9 @@ class ActorWrapper(object):
             joint_state = self.get_joint_degree()
             # get action from policy
             conti_action, dis_action = ray.get([self.policy_id.select_action.remote(pc_state, joint_state, explore_ratio)])[0]
-            # print(f">>>>>>>>>>>>>>>>>>>>>>>>conti_para: {conti_para}")
             conti_action = np.append(conti_action, 0)
 
-            obs = self.env.step(conti_action, delta=True, config=True, repeat=200)[0]
+            obs = self.env.step(conti_action, delta=True, config=True, repeat=300)[0]
 
             """visdom part visualize the image of the process"""
             self.vis.image(obs[0][1][:3].transpose(0, 2, 1), win=self.win_id, opts={"title": "policy"})
@@ -201,8 +204,13 @@ class ActorWrapper(object):
             next_pc_state, next_target_points, next_manipulator_points = self.get_pc_state()
             next_joint_state = self.get_joint_degree()
 
-            # set discrete_action to 0 when testing the continue action
-            # discrete_action = 0
+            # Bonus reward part
+            distance = self.get_distance(next_manipulator_points[-3:, :3], next_target_points[:, :3])
+            orientation = self.get_orientation(next_manipulator_points[-3:, :3], next_target_points[:, :3])
+            bonus_reward = self.approaching_reward(distance, orientation)
+            if bonus_reward == 1:
+                done = 1
+            reward += bonus_reward
 
             if vis:
                 vis_pc = next_pc_state[:, :3]
@@ -211,45 +219,54 @@ class ActorWrapper(object):
                 axis_pcd = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
                 o3d.visualization.draw_geometries([point_cloud] + [axis_pcd])
 
-            if dis_action >= 0.:
-                """
-                try to lift the target object
-                """
-                cur_joint = np.array(self.env._panda.getJointStates()[0])
-                cur_joint[-1] = 0.8  # close finger
-                # observations = [self.env.step(cur_joint, repeat=300, config=True, vis=False)[0]]
-                obs = self.env.step(cur_joint, repeat=300, config=True, vis=False)
+            # if dis_action >= 0.:
+            #     """
+            #     try to lift the target object
+            #     """
+            #     cur_joint = np.array(self.env._panda.getJointStates()[0])
+            #     cur_joint[-1] = 0.8  # close finger
+            #     # observations = [self.env.step(cur_joint, repeat=300, config=True, vis=False)[0]]
+            #     obs = self.env.step(cur_joint, repeat=300, config=True, vis=False)
 
-                # release the constraint of the target object
-                p.removeConstraint(fixed_joint_constraint)
-                # get the pc_state after close the gripper
-                next_pc_state, next_target_points, next_manipulator_points = self.get_pc_state()
+            #     # release the constraint of the target object
+            #     p.removeConstraint(fixed_joint_constraint)
+            #     # get the pc_state after close the gripper
+            #     next_pc_state, next_target_points, next_manipulator_points = self.get_pc_state()
 
+            #     done = 1
+            #     pos, orn = p.getLinkState(self.env._panda.pandaUid, self.env._panda.pandaEndEffectorIndex)[4:6]
+
+            #     # lifting part
+            #     for i in range(10):
+            #         pos = (pos[0], pos[1], pos[2] + 0.03)
+            #         jointPoses = np.array(p.calculateInverseKinematics(self.env._panda.pandaUid,
+            #                                                            self.env._panda.pandaEndEffectorIndex, pos,
+            #                                                            maxNumIterations=500,
+            #                                                            residualThreshold=1e-8))
+            #         jointPoses[6] = 0.8
+            #         jointPoses = jointPoses[:7].copy()
+
+            #         obs = self.env.step(jointPoses, config=True)[0]
+
+            #         """visdom part visualize the image of the process"""
+            #         self.vis.image(obs[0][1][:3].transpose(0, 2, 1), win=self.win_id, opts={"title": "policy"})
+
+            #     if self.env.target_lifted():
+            #         reward = 1
+
+
+            if self.collision_check():
                 done = 1
-                pos, orn = p.getLinkState(self.env._panda.pandaUid, self.env._panda.pandaEndEffectorIndex)[4:6]
+                reward = 0
 
-                # lifting part
-                for i in range(10):
-                    pos = (pos[0], pos[1], pos[2] + 0.03)
-                    jointPoses = np.array(p.calculateInverseKinematics(self.env._panda.pandaUid,
-                                                                       self.env._panda.pandaEndEffectorIndex, pos,
-                                                                       maxNumIterations=500,
-                                                                       residualThreshold=1e-8))
-                    jointPoses[6] = 0.8
-                    jointPoses = jointPoses[:7].copy()
-
-                    obs = self.env.step(jointPoses, config=True)[0]
-
-                    """visdom part visualize the image of the process"""
-                    self.vis.image(obs[0][1][:3].transpose(0, 2, 1), win=self.win_id, opts={"title": "policy"})
-
-                if self.env.target_lifted():
-                    reward = 1
+            # reach predefined step_num 
             if movement_num == 25:
                 done = 1
 
+            conti_action = next_joint_state - joint_state  # This is for the situation that arm doesn't reach teh goal position
             data_list.append((pc_state, joint_state, conti_action[:6], dis_action,
                               next_pc_state, next_joint_state, reward, done))
+
 
         for i in range(len(data_list)):
             (pc_state, joint_state, conti_action[:6], dis_action,
@@ -260,7 +277,12 @@ class ActorWrapper(object):
                                                       dis_action, next_pc_state, next_joint_state, reward, done)])
         p.removeConstraint(fixed_joint_constraint)
         self.env.place_back_objects()
-        return (1, reward)
+
+        # return the value according to the last reward in the episode
+        if reward == 1:
+            return (1, 1)
+        else:
+            return (1, 0)
 
     def expert_move(self, vis=False):
         # data_list is for store data, in order to save successful grasp process only
@@ -292,34 +314,31 @@ class ActorWrapper(object):
 
         reward = 0
         dis_action = -1
-        done = -1
+        done = 0
         if path is None:
             return (0, 0)
         for i in range(len(path)):
+            reward = 0
             # get the state
             pc_state, target_points, manipulator_points = self.get_pc_state()
             if target_points is None:
                 p.removeConstraint(fixed_joint_constraint)
                 self.env.place_back_objects()
                 return (0, 0)
-            # print(f"======================pc number: {len(pc_state)}")
+            
             joint_state = self.get_joint_degree()
-            # dis_action = 0
-            distance = self.get_distance(manipulator_points[-3:, :3], target_points[:, :3])
-            orientation = self.get_orientation(manipulator_points[-3:, :3], target_points[:, :3])
-            # print(f"orientation: {orientation}")
+            
             next_pos = path[i]
             jointPoses = self.env._panda.solveInverseKinematics(next_pos[:3], ros_quat(next_pos[3:]))
             jointPoses[6] = 0
             jointPoses = jointPoses[:7].copy()
-            obs = self.env.step(jointPoses, config=True, repeat=200)[0]
+            obs = self.env.step(jointPoses, config=True, repeat=250)[0]
 
             # get next state and done and reward
             next_pc_state, next_target_points, next_manipulator_points = self.get_pc_state()
             next_joint_state = self.get_joint_degree()
-            next_distance = self.get_distance(next_manipulator_points[-3:, :3], next_manipulator_points[:, :3])
+            
             con_action = next_joint_state - joint_state
-            dis_reward = distance - next_distance
 
             # if vis:
             #     vis_pc = next_pc_state[:, :3]
@@ -327,57 +346,54 @@ class ActorWrapper(object):
             #     point_cloud.points = o3d.utility.Vector3dVector(vis_pc)
             #     axis_pcd = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
             #     o3d.visualization.draw_geometries([point_cloud] + [axis_pcd])
-            
-            # done = 0
-            # orientation = self.get_orientation(next_manipulator_points[-3:, :3], next_target_points[:, :3])
-            # distance = self.get_distance(next_manipulator_points[-3:, :3], next_target_points[:, :3])
-            # if orientation > 0.65 and distance < 0.25:
-            #     reward += 1
-            #     done = 1
-            #     print(f"congradulation!!!! expert reached the goal>>>>>>>>>>>>")
-            # # elif orientation > 0.8 and distance < 0.5:
-            # #     reward += 0.05
-            # #     print(f"congradulation!!!! policy close to the goal>>>>>>>>>>>>")
-            # if i == len(path)-1:
-            #     if distance  < 0.3 and orientation > 0 and reward == 0:
-            #         reward += 0.05
-            #     elif orientation < 0 and reward == 0:
-            #         reward -= 0.1
-            #     done = 1
-            # # else:
-            # #     done = 0
 
-            data_list.append((pc_state, joint_state, con_action, dis_action,
-                              next_pc_state, next_joint_state, reward, done))
-
-            """visdom part visualize the image of the process"""
-            self.vis.image(obs[0][1][:3].transpose(0, 2, 1), win=self.win_id, opts={"title": "expert"})
-
-        for i in range(2):
-            # get the state
-            pc_state, target_points, manipulator_points = self.get_pc_state()
-            joint_state = self.get_joint_degree()
-            dis_action = 0
-
-            obs = self.env.step(action=np.array([0, 0, 0.015, 0, 0, 0]))[0]
-            
-            """visdom part visualize the image of the process"""
-            self.vis.image(obs[0][1][:3].transpose(0, 2, 1), win=self.win_id, opts={"title": "expert"})
-
-            # get next state and done and reward
-            next_pc_state, next_target_points, next_manipulator_points = self.get_pc_state()
-            next_joint_state = self.get_joint_degree()
-            con_action = next_joint_state - joint_state
-            reward = 0
-            done = 0
-            if i == 1:
+           
+            distance = self.get_distance(next_manipulator_points[-3:, :3], next_target_points[:, :3])
+            orientation = self.get_orientation(next_manipulator_points[-3:, :3], next_target_points[:, :3])
+            bonus_reward = self.approaching_reward(distance, orientation)
+            if bonus_reward == 1:
                 done = 1
-                dis_action = 1
-                p.removeConstraint(fixed_joint_constraint)
-                reward = self.env.retract()
-
+            reward += bonus_reward
             data_list.append((pc_state, joint_state, con_action, dis_action,
                               next_pc_state, next_joint_state, reward, done))
+
+
+            """visdom part visualize the image of the process"""
+            self.vis.image(obs[0][1][:3].transpose(0, 2, 1), win=self.win_id, opts={"title": "expert"})
+
+            if done == 1:
+                break
+        # for i in range(2):
+        #     # get the state
+        #     pc_state, target_points, manipulator_points = self.get_pc_state()
+        #     joint_state = self.get_joint_degree()
+        #     dis_action = 0
+
+        #     obs = self.env.step(action=np.array([0, 0, 0.015, 0, 0, 0]))[0]
+            
+        #     """visdom part visualize the image of the process"""
+        #     self.vis.image(obs[0][1][:3].transpose(0, 2, 1), win=self.win_id, opts={"title": "expert"})
+
+        #     # get next state and done and reward
+        #     next_pc_state, next_target_points, next_manipulator_points = self.get_pc_state()
+        #     next_joint_state = self.get_joint_degree()
+        #     con_action = next_joint_state - joint_state
+        #     reward = 0
+        #     done = 0
+        #     orientation = self.get_orientation(next_manipulator_points[-3:, :3], next_target_points[:, :3])
+        #     distance = self.get_distance(next_manipulator_points[-3:, :3], next_target_points[:, :3])
+        #     bonus_reward = self.approaching_reward(distance, orientation)
+        #     reward += bonus_reward
+
+
+        #     if i == 1:
+        #         done = 1
+        #         dis_action = 1
+        #         p.removeConstraint(fixed_joint_constraint)
+        #         reward = self.env.retract()
+
+        #     data_list.append((pc_state, joint_state, con_action, dis_action,
+        #                       next_pc_state, next_joint_state, reward, done))
             # check for pointcloud
             # vis_pc = pc_state[:, :3]
             # point_cloud = o3d.geometry.PointCloud()
@@ -389,7 +405,7 @@ class ActorWrapper(object):
             (pc_state, joint_state, con_action, dis_action, next_pc_state,
                 next_joint_state, reward, done) = data_list[i]
             ray.get([self.buffer_id.add.remote(pc_state, joint_state, con_action, dis_action,
-                                                next_pc_state, next_joint_state, reward, done)])
+                                               next_pc_state, next_joint_state, reward, done)])
         # else:
         #     # store fail process into online_buffer
         #     for i in range(len(data_list)):
@@ -513,12 +529,17 @@ class ActorWrapper(object):
         return all_pc, target_points, manipulator_points
 
     def get_distance(self, source_cloud, target_cloud):
-        # center_points is the center of all the points
-        center_points = np.mean(target_cloud, axis=0)
-        distances = np.linalg.norm(center_points[np.newaxis, :] - source_cloud, axis=1)
-        mean_distances = np.mean(distances)
-        # suitable distance be around 0.35
-        return mean_distances
+        # source_cloud is for gripper and target_cloud is for target object
+        # Use kdtree to get the closest points to the gripper and then
+        # calculate the distance between them and gripper center point
+        
+        source_center_point = np.mean(source_cloud, axis=0)
+        tree = cKDTree(target_cloud)
+        closest_distance = tree.query(source_center_point, k=100)[0]
+        mean_distance = np.mean(closest_distance)
+        # print(f"mean_distance: {mean_distance}")
+        # print(f"closest_distance: {closest_distance}")
+        return mean_distance
 
     def get_orientation(self, gripper_points, target_points):
         # Extract the individual gripper points
@@ -531,10 +552,13 @@ class ActorWrapper(object):
         gripper_middle = (gripper_left + gripper_right) / 2.0
         # Compute the vector from the back to the middle of the left and right gripper points
         gripper_vector = gripper_middle - gripper_back
-        # Calculate the mean of the target points
-        target_mean = np.mean(target_points, axis=0)
+        
+        # Calculate the mean distance of the closest target points
+        tree = cKDTree(target_points)
+        closest_indexes = tree.query(gripper_middle, k=100)[1]
+        target_closest_mean = np.mean(target_points[closest_indexes], axis=0)
         # Compute the vector pointing from the back gripper point to the mean of the target point cloud
-        target_vector = target_mean - gripper_back
+        target_vector = target_closest_mean - gripper_back
         # Normalize the vectors
         gripper_vector = gripper_vector / np.linalg.norm(gripper_vector)
         target_vector = target_vector / np.linalg.norm(target_vector)
@@ -556,6 +580,13 @@ class ActorWrapper(object):
             collision_set = set((target_id, source_id))
             if self.env._panda.pandaUid in collision_set and self.env.plane_id in collision_set:
                 return True
+        # furniture-collision part
+        for x in all_collision:
+            target_id, source_id = x[1:3]
+            collision_set = set((target_id, source_id))
+            if self.env._panda.pandaUid in collision_set and self.env.furniture_id in collision_set:
+                return True
+
         return False
     
     def base2camera(self, pointcloud):
@@ -567,6 +598,18 @@ class ActorWrapper(object):
         pointcloud_camera = np.dot(inverse_camera_matrix, np.hstack((pointcloud_ef_pose, np.ones((pointcloud_ef_pose.shape[0], 1)))).T).T
         pointcloud_camera[:, 3] = original_fourth_column
         return pointcloud_camera
+    
+    def approaching_reward(self, distance, orientation):
+        if distance <= 0.13 and orientation > 0.9:
+            return 1
+        elif distance <= 0.2 and orientation > 0.85:
+            return 0.2
+        elif distance <= 0.3 and orientation > 0.8:
+            return 0.1
+        else:
+            return 0
+
+
 @ray.remote(num_cpus=1, num_gpus=0.12)
 class ActorWrapper012(ActorWrapper):
     pass

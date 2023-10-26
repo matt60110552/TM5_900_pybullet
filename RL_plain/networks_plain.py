@@ -147,9 +147,9 @@ class QNetwork(nn.Module):
         self.linear3 = nn.Linear(hidden_dim, 1)
 
         # Q2 architecture
-        self.linear4 = nn.Linear(num_inputs + 6, hidden_dim)
-        self.linear5 = nn.Linear(hidden_dim, hidden_dim)
-        self.linear6 = nn.Linear(hidden_dim, 1)
+        self.linear5 = nn.Linear(num_inputs + 6, hidden_dim)
+        self.linear6 = nn.Linear(hidden_dim, hidden_dim)
+        self.linear7 = nn.Linear(hidden_dim, 1)
 
         self.apply(weights_init_)
 
@@ -162,9 +162,9 @@ class QNetwork(nn.Module):
         x1 = F.relu(self.linear2(x1))
         x1 = self.linear3(x1)
 
-        x2 = F.relu(self.linear4(sa2))
-        x2 = F.relu(self.linear5(x2))
-        x2 = self.linear6(x2)
+        x2 = F.relu(self.linear5(sa2))
+        x2 = F.relu(self.linear6(x2))
+        x2 = self.linear7(x2)
 
         return x1, x2, x3
 
@@ -191,7 +191,7 @@ class GaussianPolicy(nn.Module):
         # self.discrete = nn.Linear(hidden_dim, latent_size)
         self.conti = nn.Linear(hidden_dim, 6)
         self.discre = nn.Linear(hidden_dim, 1)
-        self.max_joint_limit = torch.tensor([0.1, 0.1, 0.1, 0.1, 0.1, 0.1]).to(self.device)
+        self.max_joint_limit = torch.tensor([0.15, 0.15, 0.15, 0.15, 0.15, 0.15]).to(self.device)
         self.apply(weights_init_)
 
     def forward(self, state):
@@ -221,7 +221,7 @@ class ConditionalPredictNetwork(nn.Module):
         init_tensor = torch.rand(2, latent_size) * 2 - 1  # Don't initialize near the extremes.
         self.emb_table = torch.nn.Parameter(init_tensor.type(torch.float32), requires_grad=True)
         # self.max_joint_limit = np.array([4.712385, 3.14159, 3.14159,  3.14159,  3.14159,  4.712385])  # min_limit has same value with negative
-        self.max_joint_limit = np.array([0.1, 0.1, 0.1, 0.1, 0.1, 0.1])  # min_limit has same value with negative
+        self.max_joint_limit = np.array([0.15, 0.15, 0.15, 0.15, 0.15, 0.15])  # min_limit has same value with negative
 
         # Encoder
         self.encode2latent = self.get_mlp(num_actions, latent_size, latent_size)

@@ -25,8 +25,8 @@ class AgentWrapper(object):
         self.critic, self.critic_optim, self.critic_scheduler = self.get_critic()
         self.policy_target, _, _ = self.get_policy()
         self.critic_target, _, _ = self.get_critic()
-        self.policy_feat_extractor, self.policy_feat_extractor_optim = self.get_feature_extractor(scene_level)
-        self.encoder_feat_extractor, self.encoder_feat_extractor_optim = self.get_feature_extractor(scene_level)
+        self.policy_feat_extractor, self.policy_feat_extractor_optim, self.policy_feat_extractor_scheduler = self.get_feature_extractor(scene_level)
+        self.encoder_feat_extractor, self.encoder_feat_extractor_optim ,self.encoder_feat_extractor_scheduler = self.get_feature_extractor(scene_level)
         self.offline_collect_times = 0  # How many episode should each actor to run for collecting the offline data
         self.offline_train_times = 0
         self.replay_buffer_id = replay_buffer_id
@@ -47,11 +47,11 @@ class AgentWrapper(object):
         self.timestep = 0
         self.policy_freq = 2
         self.cvae_retrain_frequency = 10
-        self.discount = 0.95
+        self.discount = 0.99
         self.cvae_loop_time = 40
-        self.policy_loop_time = 40
+        self.policy_loop_time = 15
         self.beta = 0.00005
-        self.noise_scale = 0.1
+        self.noise_scale = 0.05
         self.noise_clip = 0.08
 
         self.median = 1
@@ -69,7 +69,7 @@ class AgentWrapper(object):
 
             conti_action, dis_action = self.policy(all_state)
             #randomly explore part
-            conti_action = (conti_action + explore_rate * 0.1 * torch.randn(conti_action.size()).to(self.device)).clamp(-0.1, 0.1)
+            conti_action = (conti_action + explore_rate * self.noise_scale * torch.randn(conti_action.size()).to(self.device)).clamp(-0.15, 0.15)
             # random explore part
             # noise = (explore_rate * torch.randn(conti_emb.size())).clamp(-self.noise_clip, self.noise_clip).to(self.device)
             # conti_emb = (conti_emb + noise).clamp(-1, 1)
@@ -131,7 +131,12 @@ class AgentWrapper(object):
         extractor.to(self.device)
         extractor_optim = optim.Adam(
             extractor.parameters(), lr=1e-4, eps=1e-5, weight_decay=1e-5)
-        return extractor, extractor_optim
+        extractor_scheduler = StepLR.MultiStepLR(
+            extractor_optim,
+            milestones=[30, 80, 120],
+            gamma=0.5,
+        )
+        return extractor, extractor_optim, extractor_scheduler
 
     def get_match_scores(self, action):
         # compute similarity probability based on L2 norm
@@ -294,7 +299,7 @@ class AgentWrapper(object):
         By doing this line again, the error disappear.
 
 
-        ratio is for expert data and onpolicy data
+        ratio is for onpolicy data
         """
         critic_loss_list = []
         policy_loss_list = []
@@ -308,7 +313,7 @@ class AgentWrapper(object):
         self.cvae.eval()
         start = time.time()
 
-        expert_batch_size = batch_size if not ratio else int(batch_size * ratio)
+        expert_batch_size = batch_size if not ratio else int(batch_size * (1-ratio))
         policy_batch_size = batch_size - expert_batch_size
         print(f"expert_batch_size: {expert_batch_size}")
         print(f"policy_batch_size: {policy_batch_size}")
@@ -323,6 +328,8 @@ class AgentWrapper(object):
                  policy_reward, policy_done) = ray.get([self.online_replay_buffer_id.sample.remote(policy_batch_size)])[0]
 
                 # combine the datas, not sure why some of data need to use concatenate rather than vstack
+                print(f"expert_batch_size: {expert_batch_size}")
+                print(f"policy_batch_size: {policy_batch_size}")
                 pc_state = np.concatenate((pc_state, policy_pc_state), axis=0)
                 joint_state = np.concatenate((joint_state, policy_joint_state), axis=0)
                 conti_action = np.concatenate((conti_action, policy_conti_action), axis=0)
@@ -362,7 +369,9 @@ class AgentWrapper(object):
             self.critic_optim.zero_grad()
             critic_loss.backward()
             self.critic_optim.step()
+            self.critic_scheduler.step()
             self.policy_feat_extractor_optim.step()
+            self.policy_feat_extractor_scheduler.step()
 
             critic_loss_list.append(critic_loss.detach().cpu().numpy())
             # Delayed Actor update
@@ -373,7 +382,7 @@ class AgentWrapper(object):
 
                 if expert_batch_size != 0:
                     bc_loss = F.mse_loss(conti_action[:expert_batch_size, :], self.conti_action[:expert_batch_size, :])
-                    terminal_loss = F.mse_loss(dis_action[:expert_batch_size], self.dis_action[:expert_batch_size, :])
+                    terminal_loss = F.mse_loss(dis_action[:expert_batch_size], self.dis_action[:expert_batch_size])
                 else:
                     bc_loss = 0
                 print(f"bc_loss: {bc_loss}")
@@ -385,12 +394,14 @@ class AgentWrapper(object):
 
                 # combine all loss
                 # all_policy_loss = policy_loss + 1.2 * bc_loss + terminal_loss
-                all_policy_loss = policy_loss + 15 * bc_loss + 10*terminal_loss
+                # all_policy_loss = policy_loss + 15 * bc_loss + 10 * terminal_loss
+                all_policy_loss = policy_loss + 10 * bc_loss
 
                 self.critic_optim.zero_grad()
                 self.policy_optim.zero_grad()
                 all_policy_loss.backward()
                 self.policy_optim.step()
+                self.policy_scheduler.step()
                 self.critic_optim.zero_grad()
 
                 # Update target networks with Polyak averaging
@@ -414,7 +425,7 @@ class AgentWrapper(object):
             # Add noise to continuous action
             noise = (torch.randn_like(conti_action)*self.noise_scale).clamp(-self.noise_clip, self.noise_clip).to(self.device)
             # noisy_conti_action = torch.clamp(conti_action + noise, -self.noise_clip, self.noise_clip)
-            noisy_conti_action = (conti_action + noise).clamp(-0.1, 0.1)
+            noisy_conti_action = (conti_action + noise).clamp(-0.15, 0.15)
 
             q1, q2, _ = self.critic_target(next_all_feat, noisy_conti_action)
             target_q_value = torch.min(q1, q2).squeeze()
@@ -598,12 +609,12 @@ class AgentWrapper(object):
         return conti_para
 
 
-@ray.remote(num_cpus=1, num_gpus=1)
+@ray.remote(num_cpus=1, num_gpus=0.12)
 class AgentWrapper012(AgentWrapper):
     pass
 
 
-@ray.remote(num_cpus=1, num_gpus=0.12)
+@ray.remote(num_cpus=1, num_gpus=1)
 class RolloutWrapper012(AgentWrapper):
     pass
 
