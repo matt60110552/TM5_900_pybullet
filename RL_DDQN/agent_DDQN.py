@@ -24,7 +24,9 @@ class AgentWrapper(object):
         self.critic, self.critic_optim, self.critic_scheduler = self.get_critic()
         self.policy_target, _, _ = self.get_policy()
         self.critic_target, _, _ = self.get_critic()
-        self.policy_feat_extractor, self.policy_feat_extractor_optim, self.policy_feat_extractor_scheduler = self.get_feature_extractor(scene_level)
+        (self.policy_feat_extractor, self.policy_feat_extractor_optim,
+         self.policy_feat_extractor_scheduler) = self.get_feature_extractor()
+        
         self.offline_collect_times = 0  # How many episode should each actor to run for collecting the offline data
         self.offline_train_times = 0
         self.replay_buffer_id = replay_buffer_id
@@ -42,9 +44,8 @@ class AgentWrapper(object):
         self.tau = 0.005
         self.timestep = 0
         self.policy_freq = 2
-        self.cvae_retrain_frequency = 10
         self.discount = 0.99
-        self.policy_loop_time = 15
+        self.policy_loop_time = 100
         self.beta = 0.00005
         self.noise_scale = 0.05
         self.noise_clip = 0.08
@@ -140,18 +141,18 @@ class AgentWrapper(object):
 
         for _ in range(self.policy_loop_time):
             if expert_batch_size > 0:
-                (goal_pos, joint_state, cur_gripper_pos, conti_action,
+                (goal_state, joint_state, cur_gripper_pos, conti_action,
                 next_joint_state, next_gripper_pos,
                 reward, done) = ray.get([self.replay_buffer_id.sample.remote(expert_batch_size)])[0]
             elif policy_batch_size > 0:
-                (policy_goal_pos, policy_joint_state, policy_cur_gripper_pos, policy_conti_action,
+                (policy_goal_state, policy_joint_state, policy_cur_gripper_pos, policy_conti_action,
                 policy_next_joint_state, policy_next_gripper_pos,
                 policy_reward, policy_done) = ray.get([self.replay_buffer_id.sample.remote(policy_batch_size)])[0]
 
                 # Combine the data
                 print(f"expert_batch_size: {expert_batch_size}")
                 print(f"policy_batch_size: {policy_batch_size}")
-                goal_state = np.concatenate((goal_pos, policy_goal_pos), axis=0)
+                goal_state = np.concatenate((goal_state, policy_goal_state), axis=0)
                 joint_state = np.concatenate((joint_state, policy_joint_state), axis=0)
                 cur_gripper_pos = np.concatenate((cur_gripper_pos, policy_cur_gripper_pos), axis=0)
                 conti_action = np.concatenate((conti_action, policy_conti_action), axis=0)
@@ -178,7 +179,7 @@ class AgentWrapper(object):
                 target_Q = self.reward + (1 - self.done) * self.discount * target_Q
 
             feat_critic = self.get_feature_for_policy(self.goal_state, self.joint_state, self.cur_gripper_pos)
-            current_q1, current_q2, _ = self.critic(feat_critic, self.conti_action)
+            current_q1, current_q2 = self.critic(feat_critic, self.conti_action)
             current_q1 = current_q1.squeeze()
             current_q2 = current_q2.squeeze()
             print(f"target_Q: {torch.mean(target_Q)}, current_q1: {torch.mean(current_q1)}, current_q2: {torch.mean(current_q2)}")
@@ -207,13 +208,13 @@ class AgentWrapper(object):
                     bc_loss = 0
                 print(f"bc_loss: {bc_loss}")
                 # get policy_loss through critic
-                q1, q2, _ = self.critic(feat_policy, conti_action)
+                q1, q2 = self.critic(feat_policy, conti_action)
                 policy_loss = -torch.min(q1, q2).mean()
 
                 # combine all loss
                 # all_policy_loss = policy_loss + 1.2 * bc_loss + terminal_loss
                 # all_policy_loss = policy_loss + 15 * bc_loss + 10 * terminal_loss
-                all_policy_loss = policy_loss + 10 * bc_loss
+                all_policy_loss = policy_loss + 50 * bc_loss
 
                 self.critic_optim.zero_grad()
                 self.policy_optim.zero_grad()
@@ -243,7 +244,7 @@ class AgentWrapper(object):
             # noisy_conti_action = torch.clamp(conti_action + noise, -self.noise_clip, self.noise_clip)
             noisy_conti_action = (conti_action + noise).clamp(-0.15, 0.15)
 
-            q1, q2, _ = self.critic_target(next_all_feat, noisy_conti_action)
+            q1, q2 = self.critic_target(next_all_feat, noisy_conti_action)
             target_q_value = torch.min(q1, q2).squeeze()
 
         return target_q_value
@@ -279,10 +280,17 @@ class AgentWrapper(object):
         return load_dict["timestep"]
 
     def prepare_data(self, input):
-        if not isinstance(input, torch.Tensor):
+        if isinstance(input, tuple):
+            # Convert each element of the tuple to a PyTorch tensor
+            return torch.from_numpy(np.array(input)).float().to(self.device)
+        elif isinstance(input, np.ndarray):
+            # Convert the entire NumPy array to a PyTorch tensor
             return torch.from_numpy(input).float().to(self.device)
-        else:
+        elif isinstance(input, torch.Tensor):
+            # If it's already a PyTorch tensor, return it as is
             return input
+        else:
+            raise ValueError("Input type not supported. Must be tuple, NumPy array, or PyTorch tensor.")
 
     def get_weight(self):
         update_dict = {

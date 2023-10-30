@@ -125,9 +125,9 @@ class PointNetFeature(nn.Module):
 #         return all_feature
 
 
-class FeatureExtractor(nn.Module):
+class Feature_extractor(nn.Module):
     def __init__(self):
-        super(FeatureExtractor, self).__init()
+        super(Feature_extractor, self).__init__()
 
         # Define the layers for the goal position
         self.goal_position = nn.Sequential(
@@ -151,7 +151,7 @@ class FeatureExtractor(nn.Module):
         self.combine = self.get_mlp(
             128 + 128 + 64, 512, 512)
 
-    def forward(self, goal_position, joint_degrees, link_positions, gripper_position):
+    def forward(self, goal_position, joint_degrees, gripper_position):
         x1 = self.goal_position(goal_position)
         x2 = self.joint_degrees(joint_degrees)
         x3 = self.gripper_position(gripper_position)
@@ -219,17 +219,19 @@ class GaussianPolicy(nn.Module):
     ):
         super(GaussianPolicy, self).__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.MLP = self.get_mlp(num_inputs, hidden_dim, hidden_dim)
+        self.MLP1 = self.get_mlp(num_inputs, hidden_dim, hidden_dim)
+        self.MLP2 = self.get_mlp(hidden_dim, hidden_dim//2, hidden_dim//2)
 
-        self.conti = nn.Linear(hidden_dim, 6)
+        self.conti = nn.Linear(hidden_dim//2, 6)
         self.max_joint_limit = torch.tensor([0.15, 0.15, 0.15, 0.15, 0.15, 0.15]).to(self.device)
         self.apply(weights_init_)
 
     def forward(self, state):
 
-        x1 = nn.ReLU(self.MLP(state))
+        x1 = self.MLP1(state)
+        x2 = self.MLP2(x1)
 
-        conti_action = torch.tanh(self.conti(x1)) * self.max_joint_limit
+        conti_action = torch.tanh(self.conti(x2)) * self.max_joint_limit
 
         return conti_action
 
