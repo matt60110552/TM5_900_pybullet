@@ -39,8 +39,8 @@ class ActorWrapper(object):
         test_file_dir = random.sample(test_file_dir, 15)
         self.env = SimulatedYCBEnv(renders=renders)
         self.env._load_index_objs(test_file_dir)
-        self.env.reset(save=False, enforce_face_target=True)
-        # self.env.reset(save=False, enforce_face_target=True, furniture="cabinet")
+        # self.env.reset(save=False, enforce_face_target=True)
+        self.env.reset(save=False, enforce_face_target=True, furniture="cabinet")
         self.grasp_checker = ValidGraspChecker(self.env)
         self.planner = GraspPlanner()
         self.buffer_id = buffer_id
@@ -241,10 +241,10 @@ class ActorWrapper(object):
              reward, done) = data_list[i]
             if reward == 1:
                 for i in range(5):
-                    ray.get([self.buffer_id.add.remote(goal_pos, joint_state, cur_gripper_pose, conti_action[:6],
+                    ray.get([self.online_buffer_id.add.remote(goal_pos, joint_state, cur_gripper_pose, conti_action[:6],
                                                        next_joint_state, next_gripper_pose, reward, done)])
             else:
-                ray.get([self.buffer_id.add.remote(goal_pos, joint_state, cur_gripper_pose, conti_action[:6],
+                ray.get([self.online_buffer_id.add.remote(goal_pos, joint_state, cur_gripper_pose, conti_action[:6],
                                                    next_joint_state, next_gripper_pose, reward, done)])
             # ray.get([self.online_buffer_id.add.remote(goal_pos, joint_state, cur_gripper_pose, conti_action[:6],
             #                                           next_joint_state, next_gripper_pose, reward, done)])

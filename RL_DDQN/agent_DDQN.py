@@ -147,7 +147,7 @@ class AgentWrapper(object):
             elif policy_batch_size > 0:
                 (policy_goal_state, policy_joint_state, policy_cur_gripper_pos, policy_conti_action,
                 policy_next_joint_state, policy_next_gripper_pos,
-                policy_reward, policy_done) = ray.get([self.replay_buffer_id.sample.remote(policy_batch_size)])[0]
+                policy_reward, policy_done) = ray.get([self.online_replay_buffer_id.sample.remote(policy_batch_size)])[0]
 
                 # Combine the data
                 print(f"expert_batch_size: {expert_batch_size}")

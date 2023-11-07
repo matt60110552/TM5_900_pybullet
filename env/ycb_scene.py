@@ -671,9 +671,13 @@ class SimulatedYCBEnv():
         """
         Randomize positions of each object urdf.
         """
+        # if self.furniture_name == "table":
+            # xpos = 0.8 + 0.3 * (self._blockRandom * random.random() - 0.5)
+            # ypos = 0.3 * (self._blockRandom * random.random() - 0.5)
         if self.furniture_name == "table":
-            xpos = 0.8 + 0.3 * (self._blockRandom * random.random() - 0.5)
-            ypos = 0.3 * (self._blockRandom * random.random() - 0.5)
+            # X part is not symmetry due to the issue that object is hard to approaching if too close
+            xpos = 0.83 + 0.3 * (random.random() - 0.5)
+            ypos = 0.4 * (random.random() - 0.5)
         elif self.furniture_name == "cabinet":
             xpos = 0.8 + random.uniform(-0.18, 0.18)
             ypos = random.uniform(-0.34, 0.34)

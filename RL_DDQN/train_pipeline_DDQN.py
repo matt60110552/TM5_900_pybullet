@@ -98,7 +98,7 @@ if __name__ == "__main__":
 
         for i in range(policy_train_times):
             # data_ratio = max(0., min(0.8, 1-i/policy_train_times))
-            data_ratio = min(0.8, max(0., i/policy_train_times))
+            data_ratio = min(0.5, max(0., i/policy_train_times))
             explore_ratio = max(1 - (2*i)/(policy_train_times), 0.1)
             print(f"!!!!!!!!explore_ratio: {explore_ratio}")
             print(f"!!!!!!!!data_ratio: {data_ratio}")
