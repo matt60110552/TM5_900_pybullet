@@ -170,10 +170,10 @@ class SimulatedYCBEnv():
             self.furniture_z = 0.45
         elif self.furniture_name == "cabinet":
             furniture_file = os.path.join(self.root_dir,  'data/objects/cabinet/model.urdf')
-            self.furniture_pos = np.array([0.8, 0.0, 0.01])
+            self.furniture_pos = np.array([0.65, 0.0, 0.01])
             self.furniture_id = p.loadURDF(furniture_file, [self.furniture_pos[0], self.furniture_pos[1], self.furniture_pos[2]],
                                            [0., 0., 0., 1.], useFixedBase=True)
-            self.furniture_z = 0.65
+            self.furniture_z = 0.67
         self.obj_path = [plane_file, furniture_file]
 
         # Intialize robot and objects
@@ -679,8 +679,8 @@ class SimulatedYCBEnv():
             xpos = 0.83 + 0.3 * (random.random() - 0.5)
             ypos = 0.4 * (random.random() - 0.5)
         elif self.furniture_name == "cabinet":
-            xpos = 0.8 + random.uniform(-0.18, 0.18)
-            ypos = random.uniform(-0.34, 0.34)
+            xpos = 0.65 + random.uniform(-0.14, 0.1)
+            ypos = random.uniform(-0.28, 0.28)
         
         
         obj_path = '/'.join(urdfList[0].split('/')[:-1]) + '/'

@@ -104,7 +104,7 @@ class TM5:
                                           [0.000000, 0.000000, 0.000000, 1.000000])        
         if joints is None:
             self.target_pos = [
-                    0., -1, 1.571, 0, 1.571, 0.0, 0.0, 0.0, 0.0]
+                    0., -1.1, 1.571, -0.1, 1.571, 0.0, 0.0, 0.0, 0.0]
 
             self.target_pos = self.standardize(self.target_pos)
             for j in range(1, 10):
