@@ -18,13 +18,10 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Paper: https://arxiv.org/abs/1802.09477
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 parser = argparse.ArgumentParser(description="Description of your script.")
-parser.add_argument("--cvae_train_times", type=int, default=1000, help="How many time should cvae train")
 parser.add_argument("--policy_train_times", type=int, default=1000, help="How many time should cvae and policy train")
-parser.add_argument("--cvae_save_frequency", type=int, default=100, help="How many steps cvae take to save once")
 parser.add_argument("--policy_save_frequency", type=int, default=50, help="How many steps policy take to save once")
-parser.add_argument("--buffer_save_frequency", type=int, default=10, help="How many steps buffer take to save once")
-parser.add_argument("--warmup_times", type=int, default=1, help="times for collecting data only")
-parser.add_argument("--log_dir", type=str, default="RL_ws/logs", help="where is the record")
+parser.add_argument("--buffer_save_frequency", type=int, default=3, help="How many steps buffer take to save once")
+parser.add_argument("--warmup_times", type=int, default=2, help="times for collecting data only")
 parser.add_argument("--load_filename", type=str, default=None, help="The name of load file")
 parser.add_argument("--mode", type=str, default="Train", help="Test or Train")
 parser.add_argument("--num_cpus", type=int, default=12, help="number of cpus")
@@ -39,9 +36,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.mode == "Train":
-        cvae_train_times = args.cvae_train_times
         policy_train_times = args.policy_train_times
-        cvae_save_frequency = args.cvae_save_frequency
         policy_save_frequency = args.policy_save_frequency
         buffer_save_frequency = args.buffer_save_frequency
         visual = args.visual
@@ -52,8 +47,8 @@ if __name__ == "__main__":
         ray.init(num_cpus=args.num_cpus)
 
         timestep = 1
-        replay_buffer_id = ReplayMemoryWrapper.remote(state_dim=2048, con_action_dim=64)
-        replay_online_buffer_id = ReplayMemoryWrapper.remote(state_dim=2048, con_action_dim=64)
+        replay_buffer_id = ReplayMemoryWrapper.remote()
+        replay_online_buffer_id = ReplayMemoryWrapper.remote()
         rollout_agent_id = RolloutWrapper012.remote(replay_online_buffer_id, replay_buffer_id,
                                                     train=False, scene_level=scene_level, batch_size=batch_size)
         learner_id = AgentWrapper012.remote(replay_online_buffer_id, replay_buffer_id, scene_level=scene_level,
@@ -66,7 +61,7 @@ if __name__ == "__main__":
         checkpoint_path = os.path.join(current_file_path, 'checkpoints')
         # Create a folder for logs using the formatted datetime
         log_path = os.path.join(current_file_path, 'logs')
-        npz_data_path = os.path.join(current_file_path, 'npz_data/scene_level') if scene_level else os.path.join(current_file_path, 'npz_data/object_level')
+        npz_data_path = os.path.join(current_file_path,'npz_data/scene_level') if scene_level else os.path.join(current_file_path, 'npz_data/object_level')
         # load model test
         if args.load_filename is not None:
             ray.get(learner_id.load.remote(checkpoint_path + "/" + args.load_filename))
@@ -98,42 +93,12 @@ if __name__ == "__main__":
         for _ in range(args.warmup_times):
             ray.get([actor.rollout_once.remote(mode="onpolicy", explore_ratio=1) for actor in actor_ids])
 
-        # for i in range(cvae_train_times):
-        #     roll = []
-        #     roll.extend([actor.rollout_once.remote() for actor in actor_ids])
-        #     roll.extend([learner_id.cvae_train.remote(batch_size, timestep, cvae_train_times)])
-        #     result = ray.get(roll)
-        #     con_recon_loss, kl_loss, gripper_pre_loss, manipulator_pre_loss = result[-1]
-        #     writer.add_scalar("con_recon_loss", con_recon_loss, timestep)
-        #     writer.add_scalar("kl_loss", kl_loss, timestep)
-        #     writer.add_scalar("gripper_pre_loss", gripper_pre_loss, timestep)
-        #     writer.add_scalar("manipulator_pre_loss", manipulator_pre_loss, timestep)
-        #     if timestep % cvae_save_frequency == 0:
-        #         filename = save_checkpoint_path + "/cvae_" + str(timestep)
-        #         ray.get([learner_id.save.remote(filename, timestep)])
-        #     if timestep % buffer_save_frequency == 0:
-        #         filename = save_npz_data_path + "/expert"
-        #         ray.get([replay_buffer_id.save_data.remote(filename)])
-        #     timestep += 1
-        # print(f"cvae finished!!!", end="\n\n")
-
-        # # assign the median and offset of the rollout_agent
-        # ray.get([rollout_agent_id.get_median_offset.remote(batch_size)])
-        # ray.get([learner_id.get_median_offset.remote(batch_size)])
         weight = ray.get([learner_id.get_weight.remote()])[0]
         ray.get([rollout_agent_id.load.remote(weight, dict=True)])
 
-        # for _ in range(args.warmup_times):
-        #     ray.get([actor.rollout_once.remote(mode="onpolicy", explore_ratio=1) for actor in actor_ids])
-
-        # buffer_size1 = ray.get([replay_buffer_id.get_size.remote()])
-        # buffer_size2 = ray.get([replay_online_buffer_id.get_size.remote()])
-        # print(f"buffer_size1: {buffer_size1}")
-        # print(f"buffer_size2: {buffer_size2}")
-
         for i in range(policy_train_times):
             # data_ratio = max(0., min(0.8, 1-i/policy_train_times))
-            data_ratio = min(0.8, max(0., i/policy_train_times))
+            data_ratio = min(0.5, max(0., i/policy_train_times))
             explore_ratio = max(1 - (2*i)/(policy_train_times), 0.1)
             print(f"!!!!!!!!explore_ratio: {explore_ratio}")
             print(f"!!!!!!!!data_ratio: {data_ratio}")
@@ -143,7 +108,7 @@ if __name__ == "__main__":
             roll.extend([rollout_agent_id.load.remote(weight, dict=True)])
             roll.extend([learner_id.get_weight.remote()])
             result = ray.get(roll)
-            critic_loss, policy_loss, bc_loss, terminal_loss = result[-3]
+            critic_loss, policy_loss, bc_loss = result[-3]
             weight = result[-1]
 
             # get the total reward value of policy move for observation
@@ -158,9 +123,8 @@ if __name__ == "__main__":
             if policy_loss is not None:
                 writer.add_scalar("policy_loss", policy_loss, timestep)
                 writer.add_scalar("bc_loss", bc_loss, timestep)
-                writer.add_scalar("terminal_loss", terminal_loss, timestep)
             if timestep % policy_save_frequency == 0:
-                filename = save_checkpoint_path + "/cvae_" + str(cvae_train_times) + "policy_" + str(timestep - cvae_train_times)
+                filename = save_checkpoint_path + "/policy_" + str(timestep)
                 ray.get([learner_id.save.remote(filename, timestep)])
             if timestep % buffer_save_frequency == 0:
                 filename = save_npz_data_path + "/expert"
