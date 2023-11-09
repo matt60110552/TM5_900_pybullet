@@ -679,7 +679,7 @@ class SimulatedYCBEnv():
             xpos = 0.83 + 0.3 * (random.random() - 0.5)
             ypos = 0.4 * (random.random() - 0.5)
         elif self.furniture_name == "cabinet":
-            xpos = 0.65 + random.uniform(-0.14, 0.1)
+            xpos = 0.65 + random.uniform(-0.14, 0.08)
             ypos = random.uniform(-0.28, 0.28)
         
         

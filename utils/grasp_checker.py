@@ -67,7 +67,7 @@ class ValidGraspChecker():
         Note: The estimated elbow point is NOT calculated by IK, so it's nearly a rough guess.
         '''
 
-        table_box = np.array(p.getAABB(self.env.table_id))
+        table_box = np.array(p.getAABB(self.env.furniture_id))
         valid_grasp = []
         valid_grasp_index = []
         dist_bias = unpack_pose([0, 0, (-1) * drawback_distance, 1, 0, 0, 0])
@@ -86,7 +86,7 @@ class ValidGraspChecker():
             elbow_point = f_pose.dot(unpack_pose([0., -0.16, -0.07, 1., 0., 0., 0.]))
             box_min, box_max = table_box - elbow_point[:3, 3]
 
-            if len(p.getClosestPoints(self.robot, self.env.table_id, 0.0001)):
+            if len(p.getClosestPoints(self.robot, self.env.furniture_id, 0.0001)):
                 continue
             elif (filter_elbow) and (len(box_min[box_min < 0]) == 3) and (len(box_max[box_max > 0]) == 3):
                 continue
