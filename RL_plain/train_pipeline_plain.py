@@ -88,7 +88,7 @@ if __name__ == "__main__":
         writer = SummaryWriter(save_log_path)
 
         for _ in range(args.warmup_times):
-            ray.get([actor.rollout_once.remote(vis=True) for actor in actor_ids])
+            ray.get([actor.rollout_once.remote(vis=False) for actor in actor_ids])
 
         for _ in range(args.warmup_times):
             ray.get([actor.rollout_once.remote(mode="onpolicy", explore_ratio=1) for actor in actor_ids])
@@ -98,7 +98,7 @@ if __name__ == "__main__":
 
         for i in range(policy_train_times):
             # data_ratio = max(0., min(0.8, 1-i/policy_train_times))
-            data_ratio = min(0.5, max(0., i/policy_train_times))
+            data_ratio = min(0.5, max(0.1, i/policy_train_times))
             explore_ratio = max(1 - (2*i)/(policy_train_times), 0.1)
             print(f"!!!!!!!!explore_ratio: {explore_ratio}")
             print(f"!!!!!!!!data_ratio: {data_ratio}")

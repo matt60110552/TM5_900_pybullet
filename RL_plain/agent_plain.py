@@ -45,7 +45,7 @@ class AgentWrapper(object):
         self.timestep = 0
         self.policy_freq = 2
         self.discount = 0.99
-        self.policy_loop_time = 25
+        self.policy_loop_time = 20
         self.beta = 0.00005
         self.noise_scale = 0.05
         self.noise_clip = 0.08
