@@ -173,7 +173,7 @@ class SimulatedYCBEnv():
             self.furniture_pos = np.array([0.65, 0.0, 0.01])
             self.furniture_id = p.loadURDF(furniture_file, [self.furniture_pos[0], self.furniture_pos[1], self.furniture_pos[2]],
                                            [0., 0., 0., 1.], useFixedBase=True)
-            self.furniture_z = 0.67
+            self.furniture_z = 0.52
         self.obj_path = [plane_file, furniture_file]
 
         # Intialize robot and objects
@@ -679,8 +679,25 @@ class SimulatedYCBEnv():
             xpos = 0.83 + 0.3 * (random.random() - 0.5)
             ypos = 0.4 * (random.random() - 0.5)
         elif self.furniture_name == "cabinet":
-            xpos = 0.65 + random.uniform(-0.14, 0.08)
-            ypos = random.uniform(-0.28, 0.28)
+            xpos = 0.65 + random.uniform(-0.04, 0.05)
+            # ypos = random.uniform(-0.28, 0.28)
+
+
+            # Below part is to make the objects be more likely to be placed at left or right part
+            prob_left = 1/2
+            prob_middle = 1/4
+            prob_right = 1/4
+
+            # Generate a random number to determine which part to sample
+            choice = np.random.choice(['left', 'middle', 'right'], p=[prob_left, prob_middle, prob_right])
+
+            # Sample from the chosen part
+            if choice == 'left':
+                ypos = np.random.uniform(-0.28, -0.14)
+            elif choice == 'middle':
+                ypos = np.random.uniform(-0.14, 0.14)
+            else:  # choice == 'right'
+                ypos = np.random.uniform(0.14, 0.28)
         
         
         obj_path = '/'.join(urdfList[0].split('/')[:-1]) + '/'
