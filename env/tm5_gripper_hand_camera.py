@@ -103,8 +103,9 @@ class TM5:
         p.resetBasePositionAndOrientation(self.pandaUid, [0, 0, 0],
                                           [0.000000, 0.000000, 0.000000, 1.000000])        
         if joints is None:
-            self.target_pos = [
-                    -0.08, -1.25, 1.9, -0.1, 1.571, 0.0, 0.0, 0.0, 0.0]
+            # self.target_pos = [-0.08, -1.25, 1.9, -0.1, 1.571, 0.0, 0.0, 0.0, 0.0]
+            # self.target_pos = [-0.15, -1.35, 1.8, -0.1, 1.8, 0.0, 0.0, 0.0, 0.0]
+            self.target_pos = [-0.15, -1.55, 1.8, -0.1, 1.8, 0.0, 0.0, 0.0, 0.0]
 
             self.target_pos = self.standardize(self.target_pos)
             for j in range(1, 10):
