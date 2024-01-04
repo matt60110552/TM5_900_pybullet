@@ -383,8 +383,8 @@ class SimulatedYCBEnv():
         observations = [self.step(cur_joint, repeat=300, config=True, vis=False)[0]]
         pos, orn = p.getLinkState(self._panda.pandaUid, self._panda.pandaEndEffectorIndex)[4:6]
 
-        for i in range(10):
-            pos = (pos[0], pos[1], pos[2] + 0.03)
+        for i in range(3):
+            pos = (pos[0], pos[1], pos[2] + 0.01)
             jointPoses = np.array(p.calculateInverseKinematics(self._panda.pandaUid,
                                                                self._panda.pandaEndEffectorIndex, pos,
                                                                maxNumIterations=500,
@@ -396,6 +396,17 @@ class SimulatedYCBEnv():
         self.retracted = True
         rew = self._reward()
         return rew
+
+    def grasp(self):
+        """
+        Simple version of the retract, only the grasp part, no lifting
+        """
+        cur_joint = np.array(self._panda.getJointStates()[0])
+        cur_joint[-1] = 0.8  # close finger
+        observations = [self.step(cur_joint, repeat=300, config=True, vis=False)[0]]
+        pos, orn = p.getLinkState(self._panda.pandaUid, self._panda.pandaEndEffectorIndex)[4:6]
+        return None
+    
 
     def _reward(self):
         """
