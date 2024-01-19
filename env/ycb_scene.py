@@ -170,10 +170,17 @@ class SimulatedYCBEnv():
             self.furniture_z = 0.45
         elif self.furniture_name == "cabinet":
             furniture_file = os.path.join(self.root_dir,  'data/objects/cabinet/model.urdf')
-            self.furniture_pos = np.array([0.65, 0.0, 0.01])
+            self.furniture_pos = np.array([0.6, 0.0, 0.01])
             self.furniture_id = p.loadURDF(furniture_file, [self.furniture_pos[0], self.furniture_pos[1], self.furniture_pos[2]],
                                            [0., 0., 0., 1.], useFixedBase=True)
             self.furniture_z = 0.52
+        elif self.furniture_name == "carton_box":
+            furniture_file = os.path.join(self.root_dir,  'data/objects/carton_box/model.urdf')
+            self.furniture_pos = np.array([0.6, 0.0, 0.01])
+            self.furniture_id = p.loadURDF(furniture_file, [self.furniture_pos[0], self.furniture_pos[1], self.furniture_pos[2]],
+                                           [0., 0., 0., 1.], useFixedBase=True)
+            self.furniture_z = 0.25
+
         self.obj_path = [plane_file, furniture_file]
 
         # Intialize robot and objects
@@ -192,6 +199,8 @@ class SimulatedYCBEnv():
             self._randomly_place_objects_pack(self._get_random_object(num_object), scale=1, if_stack=if_stack)
         elif furniture == "cabinet":
             self._randomly_place_objects_pack(self._get_random_object(1), scale=1, if_stack=if_stack)
+        elif furniture == "carton_box":
+            self._randomly_place_objects_pack(self._get_random_object(1), scale=1, if_stack=if_stack)
 
 
         self._objectUids += [self.plane_id, self.furniture_id]
@@ -199,87 +208,6 @@ class SimulatedYCBEnv():
         self.collided_before = False
         self.obj_names, self.obj_poses = self.get_env_info()
         self.init_target_height = self._get_target_relative_pose()[2, 3]
-        return None  # observation
-
-    def cabinet_reset(self, save=False, init_joints=None, num_object=1, if_stack=True,
-                      cam_random=0, reset_free=False, enforce_face_target=False):
-        """
-        Environment reset called at the beginning of an episode.
-        """
-        self.retracted = False
-        if reset_free:
-            return self.cache_reset(init_joints, enforce_face_target, num_object=num_object, if_stack=if_stack)
-
-        self.disconnect()
-        self.connect()
-
-        # Set the camera  .
-        look = [0.1 - self._shift[0], 0.2 - self._shift[1], 0 - self._shift[2]]
-        distance = 2.5
-        pitch = -56
-        yaw = 245
-        roll = 0.
-        fov = 20.
-        aspect = float(self._window_width) / self._window_height
-        self.near = 0.1
-        self.far = 10
-        self._view_matrix = p.computeViewMatrixFromYawPitchRoll(look, distance, yaw, pitch, roll, 2)
-        self._proj_matrix = p.computeProjectionMatrixFOV(fov, aspect, self.near, self.far)
-        self._light_position = np.array([-1.0, 0, 2.5])
-
-        p.resetSimulation()
-        p.setTimeStep(self._timeStep)
-        p.setPhysicsEngineParameter(enableConeFriction=0)
-
-        p.setGravity(0, 0, -9.81)
-        p.stepSimulation()
-
-        # Set table and plane
-        plane_file = os.path.join(self.root_dir,  'data/objects/floor/model_normalized.urdf')  # _white
-        cabinet_file = os.path.join(self.root_dir,  'data/objects/bookcase/model.urdf')
-
-        self.obj_path = [plane_file, cabinet_file]
-        self.plane_id = p.loadURDF(plane_file, [0, 0, 0], useFixedBase=True)
-        self.cabinet_pos = np.array([0.8, 0.0, 0.01])
-        self.furniture_pos = self.cabinet_pos
-        self.cabinet_id = p.loadURDF(cabinet_file, [self.cabinet_pos[0], self.cabinet_pos[1], self.cabinet_pos[2]],
-                                     [0., 0., 0., 1.], useFixedBase=True)
-
-        # Intialize robot and objects
-        if init_joints is None:
-            self._panda = TM5(stepsize=self._timeStep, base_shift=self._shift)
-
-        else:
-            self._panda = TM5(stepsize=self._timeStep, init_joints=init_joints, base_shift=self._shift)
-            for _ in range(1000):
-                p.stepSimulation()
-
-        if not self.objects_loaded:
-            self._objectUids = self.cache_objects()
-        self._objectUids += [self.plane_id, self.cabinet_id]
-        self.collided = False
-        self.collided_before = False
-        self.obj_names, self.obj_poses = self.get_env_info()
-        self.init_target_height = self._get_target_relative_pose()[2, 3]
-
-        #  choose a random object to place on the cabinet
-
-        urdfList = self._get_random_object(num_object)
-        obj_path = '/'.join(urdfList[0].split('/')[:-1]) + '/'
-        self.target_idx = self.obj_path.index(os.path.join(self.root_dir, obj_path))
-        self.placed_objects[self.target_idx] = True
-        self.target_name = urdfList[0].split('/')[-2]
-        orn = p.getQuaternionFromEuler([0, 0, np.random.uniform(-np.pi, np.pi)])
-        p.resetBasePositionAndOrientation(self._objectUids[self.target_idx],
-                                          [0.7, 0,  0.65], [orn[0], orn[1], orn[2], orn[3]])  # for cabinet and bookcase
-        # p.resetBasePositionAndOrientation(self._objectUids[self.target_idx],
-        #                                   [0.7, 0,  0.3], [orn[0], orn[1], orn[2], orn[3]])  # for carton_box
-        p.resetBaseVelocity(
-            self._objectUids[self.target_idx], (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
-        )
-        for _ in range(2000):
-            p.stepSimulation()
-
         return None  # observation
 
     def step(self, action, delta=False, obs=True, repeat=200, config=False, vis=False):
@@ -319,9 +247,9 @@ class SimulatedYCBEnv():
                                                    projectionMatrix=hand_proj_matrix,
                                                    physicsClientId=self.cid,
                                                    renderer=p.ER_BULLET_HARDWARE_OPENGL)
-
+        # about mask: 0 for floor, 1 for furniture, 2 for arm
         depth = (far * near / (far - (far - near) * depth) * 5000).astype(np.uint16)  # transform depth from NDC to actual depth
-        intrinsic_matrix = projection_to_intrinsics(hand_proj_matrix, self._window_width, self._window_height)
+        self.intrinsic_matrix = projection_to_intrinsics(hand_proj_matrix, self._window_width, self._window_height)
         if raw_data is True:
             # mask[mask <= 2] = -1
             # mask[mask > 0] -= 3
@@ -330,9 +258,9 @@ class SimulatedYCBEnv():
             if no_gripper is True:
                 mask[mask != 2] = 0  # set the pixel of others to 0
                 mask[mask == 2] = 1  # set the pixel of gripper to 1
-                point_state = backproject_camera_target(obs[3].T, intrinsic_matrix, mask)
+                point_state = backproject_camera_target(obs[3].T, self.intrinsic_matrix, mask)
             else:
-                point_state = backproject_camera_target(obs[3].T, intrinsic_matrix, None)  # obs[4].T
+                point_state = backproject_camera_target(obs[3].T, self.intrinsic_matrix, None)  # obs[4].T
             point_state[1] *= -1
             if vis:
                 pred_pcd = o3d.geometry.PointCloud()
@@ -354,19 +282,20 @@ class SimulatedYCBEnv():
             obs = np.concatenate([rgba[..., :3], depth[..., None], mask[..., None]], axis=-1)
             obs = self.process_image(obs[..., :3], obs[..., [3]], obs[..., [4]], tuple(self._resize_img_size))
             inv_mask = np.logical_not(obs[4].T).astype(int)
-            point_state = backproject_camera_target(obs[3].T, intrinsic_matrix, inv_mask)  # obs[4].T
+            point_state = backproject_camera_target(obs[3].T, self.intrinsic_matrix, inv_mask)  # obs[4].T
             point_state[1] *= -1
             obs = (point_state, obs)
         else:
             mask[mask >= 0] += 1  # transform mask to have target id 0
-            target_idx = self.target_idx + 4
+            target_idx = self.target_idx + 4 # floor:0->1, furniture:1->2, arm:2->3, so the target_idhas to plus1 and plus 3
             mask[mask == target_idx] = 0
             mask[mask == -1] = 50
-            mask[mask != 0] = 1
+            depth[mask == 1] = 0 # filter out the floor's pointcloud by making its depth to 0
+            depth[mask == 3] = 0 # filter out the arm's pointcloud by making its depth to 0
+            mask[mask != 0] = 1 # Turn everthing other than target into 1, represent obstacle
             obs = np.concatenate([rgba[..., :3], depth[..., None], mask[..., None]], axis=-1)
             obs = self.process_image(obs[..., :3], obs[..., [3]], obs[..., [4]], tuple(self._resize_img_size))
-            point_state = backproject_camera_target(obs[3].T, intrinsic_matrix, obs[4].T)  # obs[4].T
-
+            point_state = backproject_camera_target(obs[3].T, self.intrinsic_matrix, obs[4].T)  # obs[4].T
             point_state[1] *= -1
             point_state = self.process_pointcloud(point_state, vis)
             obs = (point_state, obs)
@@ -546,7 +475,6 @@ class SimulatedYCBEnv():
         hand_far = 2
         hand_proj_matrix = p.computeProjectionMatrixFOV(fov, aspect, hand_near, hand_far)
         hand_cam_view_matrix = se3_inverse(cam_pose_mat.dot(rotX(np.pi/2).dot(rotY(-np.pi/2)))).T  # z backward
-
         lightDistance = 2.0
         lightDirection = self.furniture_pos - self._light_position
         lightColor = np.array([1., 1., 1.])
@@ -690,27 +618,13 @@ class SimulatedYCBEnv():
             xpos = 0.83 + 0.3 * (random.random() - 0.5)
             ypos = 0.4 * (random.random() - 0.5)
         elif self.furniture_name == "cabinet":
-            xpos = 0.65 + random.uniform(-0.04, 0.05)
-            # ypos = random.uniform(-0.28, 0.28)
+            xpos = 0.6 + random.uniform(-0.04, 0.05)
+            ypos = random.uniform(-0.25, 0.25)
+        elif self.furniture_name == "carton_box":
+            xpos = 0.6 + random.uniform(-0.04, 0.05)
+            ypos = random.uniform(-0.28, 0.28)
 
 
-            # Below part is to make the objects be more likely to be placed at left or right part
-            prob_left = 1/2
-            prob_middle = 1/4
-            prob_right = 1/4
-
-            # Generate a random number to determine which part to sample
-            choice = np.random.choice(['left', 'middle', 'right'], p=[prob_left, prob_middle, prob_right])
-
-            # Sample from the chosen part
-            if choice == 'left':
-                ypos = np.random.uniform(-0.28, -0.14)
-            elif choice == 'middle':
-                ypos = np.random.uniform(-0.14, 0.14)
-            else:  # choice == 'right'
-                ypos = np.random.uniform(0.14, 0.28)
-        
-        
         obj_path = '/'.join(urdfList[0].split('/')[:-1]) + '/'
 
         self.target_idx = self.obj_path.index(os.path.join(self.root_dir, obj_path))
