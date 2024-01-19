@@ -1,0 +1,7 @@
+<launch>
+  <!-- Launch the real_node.py -->
+  <node name="sim_node" pkg="scenecollision" type="sim_node.py" output="screen">
+    <!-- Add any parameters if needed -->
+    <!-- Example: <param name="param_name" value="param_value"/> -->
+  </node>
+</launch>
