@@ -14,6 +14,7 @@ import std_msgs
 from scenecollision.msg import GraspPose, motion_planning
 from scenecollision.srv import path_planning, path_planningResponse
 from sensor_msgs.point_cloud2 import create_cloud_xyz32
+import copy
 
 
 class ros_node(object):
@@ -22,6 +23,7 @@ class ros_node(object):
         self.simulation_server = rospy.Service("simulation_data", path_planning, self.create_scene)
 
     def create_scene(self, request):
+        self.actor.env.reset(save=False, enforce_face_target=False, init_joints=self.actor.init_joint_pose, reset_free=True)
         self.obs_pc_world = np.array(list(point_cloud2.read_points(request.env_data.obstacle_pointcloud,
                                                                      field_names=("x", "y", "z"),
                                                                      skip_nans=True)))
@@ -59,12 +61,11 @@ class ros_node(object):
         self.grasp_poses = self.grasp2pre_grasp(self.grasp_poses, drawback_dis=0.04) # Drawback a little
 
 
-        self.joint_configs = self.actor.grasp_pose2grasp_joint(self.grasp_poses)
 
         start_time = time.time()
         path = np.array(self.actor.create_simulation_env(self.obs_pc_world,
                                                          self.tar_pc_world,
-                                                         self.joint_configs))
+                                                         self.grasp_poses))
 
         print(f"\n\n\n\n\npath's consuming time: {time.time() - start_time}\n\n\n\n\n")
 
@@ -98,9 +99,17 @@ class ros_node(object):
         # This function will make the grasp poses retreat a little
         drawback_matrix = np.identity(4)
         drawback_matrix[2, 3] = -drawback_dis
+
+        rotation_matrix_180_deg = np.array([[-1, 0, 0],
+                                            [0, -1, 0],
+                                            [0, 0, 1]])
         result_poses = []
         for i in range(len(grasp_poses)):
-            result_poses.append(np.dot(grasp_poses[i], drawback_matrix))
+            grasp_candidate = np.dot(grasp_poses[i], drawback_matrix)
+            rotate_grasp_candidate = copy.deepcopy(grasp_candidate)
+            rotate_grasp_candidate[:3, :3] = np.dot(rotation_matrix_180_deg, rotate_grasp_candidate[:3, :3])
+            result_poses.append(grasp_candidate)
+            result_poses.append(rotate_grasp_candidate)
         return result_poses
 
 if __name__ == "__main__":

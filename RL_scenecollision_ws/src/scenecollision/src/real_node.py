@@ -28,7 +28,8 @@ class ros_node(object):
         for _ in range(msg.data):
             self.actor.env.reset(save=False, enforce_face_target=False, init_joints=self.actor.init_joint_pose, reset_free=True)
             self.actor.freeze_release(option=True) # To make the target object be fixed
-
+            self.actor.obstacle_points = None
+            self.actor.target_points = None
             obs, joint_pos, camera_info, pose_info = self.actor.env._get_observation(raw_data=False, vis=False, no_gripper=True)
             color_image = obs[1][:3].T
             depth_image = obs[1][3].T
@@ -38,10 +39,12 @@ class ros_node(object):
             mask = np.ones_like(mask_image, dtype=int)
             mask_image = -(mask_image - mask)
             
+
             
             intrinsic_matrix = self.actor.env.intrinsic_matrix
             
-            obstacle_points, target_points, scene_points = self.actor.get_pc_state(frame="world")
+            # obstacle_points, target_points, scene_points = self.actor.get_pc_state(frame="world", vis=True)
+            obstacle_points, target_points, scene_points = self.actor.get_pc_state(frame="camera", vis=False)
             obstacle_points = obstacle_points[:, :3]
             target_points = target_points[:, :3]
 
@@ -50,15 +53,28 @@ class ros_node(object):
             depth_msg = bridge.cv2_to_imgmsg(depth_image)
             mask_msg = bridge.cv2_to_imgmsg(np.uint8(mask_image), encoding='mono8')    # Assuming mask is grayscale
             
-            # # Create a service request
+            # # Create a service request(depth image part)
             contact_request = GraspGroupRequest()
             contact_request.rgb = color_msg
             contact_request.depth = depth_msg
             contact_request.seg = mask_msg
             contact_request.K = intrinsic_matrix.flatten()  # Flatten the 3x3 matrix into a 1D array
             contact_request.segmap_id = 1
+
+            # # Create a service request(pointcloud part)
+            header = rospy.Header()
+            header.stamp = rospy.Time.now()
+            header.frame_id = 'base_link'  # Replace with your desired frame ID
+            full_pc = np.concatenate((obstacle_points[:, :3], target_points[:, :3]), axis=0)
+            contact_request.pc_full = create_cloud_xyz32(header, full_pc)
+            contact_request.pc_target = create_cloud_xyz32(header, target_points[:, :3])
+            contact_request.mode = 1
             grasp_poses = self.contact_client(contact_request).grasp_poses
 
+            # Get the pointcloud of target and obstacle in world frame
+            obstacle_points, target_points, scene_points = self.actor.get_pc_state(frame="world", vis=False)
+            obstacle_points = obstacle_points[:, :3]
+            target_points = target_points[:, :3]
 
             grasp_num = len(grasp_poses)
             print(f"grasp_num: {grasp_num}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!1")
