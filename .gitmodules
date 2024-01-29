@@ -1,3 +1,6 @@
 [submodule "Helper3D"]
 	path = Helper3D
 	url = https://github.com/H-HChen/Helper3D.git
+[submodule "pybullet_ompl"]
+	path = pybullet_ompl
+	url = https://github.com/lyfkyle/pybullet_ompl.git

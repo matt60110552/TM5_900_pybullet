@@ -61,7 +61,6 @@ class ActorWrapper(object):
         self.URDFPATH = f"/home/user/RL_TM5_900_pybullet/env/models/tm5_900/tm5_900_with_gripper_.urdf"
         self.helper3d_arm_urdf = getURDF(self.URDFPATH, JointInfo=False, from_visual=False)
         self.helper3d_link_names = ["shoulder_1_link", "arm_1_link", "arm_2_link", "wrist_1_link", "wrist_2_link", "wrist_3_link"]
-        self.create_time = 0
 
 
     def rollout_once(self, vis=False):
@@ -193,7 +192,7 @@ class ActorWrapper(object):
             self.env.place_back_objects()
             return (0, 0)
         
-        obstacle_points, target_points, scene_points = self.get_pc_state(frame="base", vis=vis, obs_reserve=False)
+        obstacle_points, target_points, scene_points = self.get_pc_state(frame="base", vis=vis)
         
 
         # pcd = o3d.geometry.PointCloud()
@@ -295,7 +294,8 @@ class ActorWrapper(object):
         
         # # transform the pointcloud from camera back to world frame
         pointcloud_tar = np.hstack((pointcloud.T, np.ones((len(pointcloud.T), 1)))).T
-        points_world = (np.dot(ef_pose, self.env.cam_offset.dot(pointcloud_tar)).T)[:, :3]
+        cam_offset_inv = np.linalg.inv(self.env.cam_offset)
+        points_world = (np.dot(ef_pose, cam_offset_inv.dot(pointcloud_tar)).T)[:, :3]
 
         if len(points_world) == 0:
             return None
@@ -310,50 +310,25 @@ class ActorWrapper(object):
         con_action = np.array([i[0] for i in con_action])
         return con_action
 
-    def get_pc_state(self, vis=False, frame="camera", obs_reserve=False):
+    def get_pc_state(self, vis=False, frame="camera"):
         """
         The output pointcloud should (N, 4)
-        The obs_reserve is for obstacle pointcloud, prevent it vanishing from the furthest_sample, 
-        it will stop consider new obstacle points if True
         """
         obstacle_points = self.get_world_pointcloud(raw_data="obstacle")
         target_points = self.get_world_pointcloud(raw_data=False)
 
-        # deal with obstacle points, combine them with previous points if exist, or overwrite it with preious if None
-        if self.obstacle_points is not None:
-            if obs_reserve:
-                obstacle_points = self.obstacle_points
-            else:
-                if obstacle_points is None:
-                    obstacle_points = self.obstacle_points
-                else:
-                    # combine two pointcloud part, first convert them to tensor
-                    obstacle_points_tensor = torch.from_numpy(obstacle_points)
-                    self_obstacle_points_tensor = torch.from_numpy(self.obstacle_points)
-                    combined_obstacle_points = torch.cat((obstacle_points_tensor, self_obstacle_points_tensor), dim=0).unsqueeze(0)
-                    index = farthest_point_sample(combined_obstacle_points, 2048)
-                    obstacle_points = index_points(combined_obstacle_points, index).squeeze().detach().numpy()
-                    obstacle_points = combined_obstacle_points.squeeze().detach().numpy()
-
-        self.target_points = target_points
-        self.obstacle_points = obstacle_points
-
-        # This part is for combining the obstacle pointcloud and target pointcloud,
-        # target is obstacle during the motion planning after all
-        
-        obstacle_points_tensor = torch.from_numpy(self.obstacle_points)
-        target_points_tensor = torch.from_numpy(self.target_points)
-        combined_points = torch.cat((obstacle_points_tensor, target_points_tensor), dim=0).unsqueeze(0)
-        index = farthest_point_sample(combined_points, 2048)
-        scene_points = index_points(combined_points, index).squeeze().detach().numpy()
-
-        if obstacle_points is None:
-            return None
-        obstacle_points = np.hstack((obstacle_points, np.zeros((obstacle_points.shape[0], 1))))
+        self.obstacle_points = self.concatenate_pc(self.obstacle_points, obstacle_points)
+        self.target_points = self.concatenate_pc(self.target_points, target_points)
+        scene_points = self.concatenate_pc(self.target_points, self.obstacle_points)
+        obstacle_points = np.hstack((self.obstacle_points, np.zeros((self.obstacle_points.shape[0], 1))))
+        target_points = np.hstack((self.target_points, np.ones((self.target_points.shape[0], 1))))
+        scene_points = np.hstack((scene_points, 2 * np.ones((scene_points.shape[0], 1))))
 
         # # transform back to camera frame
         if frame == "camera":
             obstacle_points = self.base2camera(obstacle_points)
+            target_points = self.base2camera(target_points)
+            scene_points = self.base2camera(scene_points)
 
         if vis:
             all_o3d_pc = o3d.geometry.PointCloud()
@@ -363,6 +338,28 @@ class ActorWrapper(object):
             o3d.visualization.draw_geometries([all_o3d_pc]+[axis_pcd])
 
         return obstacle_points, target_points, scene_points
+
+    def concatenate_pc(self, pc_old, pc_new):
+        if pc_new is not None:
+            if pc_old is not None:
+                # concatenate two pointcloud
+                pc_old_tensor = torch.from_numpy(pc_old)
+                pc_new_tensor = torch.from_numpy(pc_new)
+                combined_pc_tensor = torch.cat((pc_old_tensor, pc_new_tensor), dim=0).unsqueeze(0)
+                index = farthest_point_sample(combined_pc_tensor, 2048)
+                combined_pc = index_points(combined_pc_tensor, index).squeeze().detach().numpy()
+            else:
+                # sample the pc_new, make the number of the pointcloud to 2048
+                pc_new_tensor = torch.from_numpy(pc_new).unsqueeze(0)
+                index = farthest_point_sample(pc_new_tensor, 2048)
+                combined_pc = index_points(pc_new_tensor, index).squeeze().detach().numpy()
+        else:
+            if pc_old is not None:
+                combined_pc = pc_old
+            else:
+                return None
+        
+        return combined_pc
 
     def base2camera(self, pointcloud):
         inverse_camera_matrix = np.linalg.inv(self.env.cam_offset)
@@ -397,23 +394,29 @@ class ActorWrapper(object):
         return pose_difference
 
 
-    def create_simulation_env(self, obs_pc=None, target_pc=None, grasp_joint_cfg=None):
+    def create_simulation_env(self, obs_pc=None, target_pc=None, grasp_poses=None):
         # This function is only for sim_actor_id, the real_actor_id won't enter here
         self.env.place_back_objects()
         p.resetBasePositionAndOrientation(self.env.furniture_id, [0, 0, 4], [0, 0, 0, 1])
         # time.sleep(2)
 
         starttime = time.time()
-        # self.sim_furniture_id, self.sim_target_id = self.create_obstacle_from_pc(obs_pc, target_pc)
-        self.sim_furniture_id = self.create_obstacle_from_pc(obs_pc, target_pc)
+        self.sim_furniture_id, self.sim_target_id = self.create_obstacle_from_pc(obs_pc, target_pc)
+        # self.sim_furniture_id = self.create_obstacle_from_pc(obs_pc, target_pc)
+        grasp_joint_cfg = self.grasp_pose2grasp_joint(grasp_poses=grasp_poses)
+
+
+        
+
+
         print(f"simulate duration: {time.time()-starttime}!!!!!!!!!!!!!!!!!")
-        path = self.motion_planning(grasp_joint_cfg=grasp_joint_cfg, )
-        self.create_time += 1
+        path = self.motion_planning(grasp_joint_cfg=grasp_joint_cfg)
+
         
         
 
         p.removeBody(self.sim_furniture_id)
-        # p.removeBody(self.sim_target_id)
+        p.removeBody(self.sim_target_id)
 
         return path
 
@@ -446,6 +449,82 @@ class ActorWrapper(object):
 
 
     def create_obstacle_from_pc(self, obs_pc, target_pc):
+        '''
+        ransac part
+        '''
+        # Assuming 'point_cloud_data' is your point cloud data in a numpy array (Nx3)
+        point_cloud = o3d.geometry.PointCloud()
+        point_cloud.points = o3d.utility.Vector3dVector(obs_pc)
+
+        remaining_points = o3d.geometry.PointCloud()
+        remaining_points.points = o3d.utility.Vector3dVector(obs_pc)
+
+        # RANSAC Plane Detection
+        planes = []
+        ransac_n_point = 200
+        while True:
+            if len(remaining_points.points) < ransac_n_point:
+                break
+            plane_model, inliers = remaining_points.segment_plane(distance_threshold=0.01, ransac_n=ransac_n_point, num_iterations=1000)
+            if len(inliers) == 0:
+                break
+
+            plane_points = remaining_points.select_by_index(inliers)
+            remaining_points = remaining_points.select_by_index(inliers, invert=True)
+
+            # Compute Bounding Box for Plane
+            aabb_plane = plane_points.get_axis_aligned_bounding_box()
+            plane_dimensions = np.asarray(aabb_plane.get_extent())
+            
+            # Create Plane as a Box
+            plane_box = o3d.geometry.TriangleMesh.create_box(width=plane_dimensions[0],
+                                                             height=plane_dimensions[1],
+                                                             depth=plane_dimensions[2])
+
+            center = [aabb_plane.get_center()[i] - plane_dimensions[i]/2 for i in range(3)]
+            plane_box.translate(center)
+            planes.append(plane_box)
+
+        combined_box = planes[0]
+        for i in range(1, len(planes)):
+            combined_box += planes[i]
+        
+        # Clustering Remaining Points
+        clustering_distance_threshold = 0.05  # Adjust this threshold based on your requirements
+        labels = np.array(remaining_points.cluster_dbscan(eps=clustering_distance_threshold, min_points=3, print_progress=False))
+
+        # Create Bounding Boxes for Each Cluster
+        bounding_boxes = []
+        for cluster_label in np.unique(labels):
+            cluster_mask = labels == cluster_label
+            cluster_points = remaining_points.select_by_index(np.where(cluster_mask)[0])
+
+            if len(cluster_points.points) > 3:
+                aabb = cluster_points.get_axis_aligned_bounding_box()
+                bounding_box_dimensions = np.asarray(aabb.get_extent())
+
+                bounding_box = o3d.geometry.TriangleMesh.create_box(width=bounding_box_dimensions[0], height=bounding_box_dimensions[1], depth=bounding_box_dimensions[2])
+                center = [aabb.get_center()[i] - bounding_box_dimensions[i]/2 for i in range(3)]
+                bounding_box.translate(center)
+                bounding_boxes.append(bounding_box)
+
+        for i in range(len(bounding_boxes)):
+            combined_box += bounding_boxes[i]
+
+        print(f"final_mesh: {np.asarray(combined_box.vertices)}")
+        print(f"final_mesh: {np.asarray(combined_box.triangles)}")
+
+
+        # Visualization
+        axes = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1)
+        # o3d.visualization.draw_geometries([point_cloud, axes] + planes + bounding_boxes)
+        # o3d.visualization.draw_geometries([point_cloud, axes] + planes)
+        o3d.visualization.draw_geometries([combined_box, axes])
+
+
+
+
+
         # This function use the 2 pointcloud to create a object in pybullet
         combined_obs_pc = self.extend_obs_pc(obs_pc=obs_pc, target_pc=target_pc)
         obs_alph = alphashape.alphashape(combined_obs_pc, 8)
@@ -477,39 +556,39 @@ class ActorWrapper(object):
                         baseOrientation=[0, 0, 0, 1]
                     )
 
-        # combined_tar_pc = self.extend_obs_pc(obs_pc=target_pc, target_pc=target_pc, scale_factor=0.005)
-        # tar_alph = alphashape.alphashape(combined_tar_pc, 30)
+        combined_tar_pc = self.extend_obs_pc(obs_pc=target_pc, target_pc=target_pc, scale_factor=0.005)
+        tar_alph = alphashape.alphashape(combined_tar_pc, 30)
 
-        # tar_vertices = tar_alph.vertices
-        # tar_faces = np.array(tar_alph.faces).flatten()
+        tar_vertices = tar_alph.vertices
+        tar_faces = np.array(tar_alph.faces).flatten()
         
-        # tar_visualShapeId = p.createVisualShape(
-        #                     shapeType=p.GEOM_MESH,
-        #                     flags=p.GEOM_FORCE_CONCAVE_TRIMESH,
-        #                     vertices=tar_vertices,
-        #                     indices=tar_faces,
-        #                     meshScale=[1, 1, 1]
-        #                 )
+        tar_visualShapeId = p.createVisualShape(
+                            shapeType=p.GEOM_MESH,
+                            flags=p.GEOM_FORCE_CONCAVE_TRIMESH,
+                            vertices=tar_vertices,
+                            indices=tar_faces,
+                            meshScale=[1, 1, 1]
+                        )
 
-        # tar_collisionShapeId = p.createCollisionShape(
-        #                     shapeType=p.GEOM_MESH,
-        #                     flags=p.GEOM_FORCE_CONCAVE_TRIMESH,
-        #                     vertices=tar_vertices,
-        #                     indices=tar_faces,
-        #                     meshScale=[1, 1, 1]
-        #                 )
+        tar_collisionShapeId = p.createCollisionShape(
+                            shapeType=p.GEOM_MESH,
+                            flags=p.GEOM_FORCE_CONCAVE_TRIMESH,
+                            vertices=tar_vertices,
+                            indices=tar_faces,
+                            meshScale=[1, 1, 1]
+                        )
 
-        # tar_body_id = p.createMultiBody(
-        #                 baseMass=1,
-        #                 baseInertialFramePosition=[0, 0, 0],
-        #                 baseCollisionShapeIndex=tar_collisionShapeId,
-        #                 baseVisualShapeIndex=tar_visualShapeId,
-        #                 basePosition=[0, 0, 0],
-        #                 baseOrientation=[0, 0, 0, 1]
-        #             )
+        tar_body_id = p.createMultiBody(
+                        baseMass=1,
+                        baseInertialFramePosition=[0, 0, 0],
+                        baseCollisionShapeIndex=tar_collisionShapeId,
+                        baseVisualShapeIndex=tar_visualShapeId,
+                        basePosition=[0, 0, 0],
+                        baseOrientation=[0, 0, 0, 1]
+                    )
 
-        # return obs_body_id, tar_body_id
-        return obs_body_id
+        return obs_body_id, tar_body_id
+        # return obs_body_id
 
     def motion_planning(self, grasp_joint_cfg):
         # Deal with the path from reset pose to pregrasp pose, self.robot is initiated here
@@ -517,9 +596,12 @@ class ActorWrapper(object):
         # motion_planning
         print(f"grasp_joint_cfg: {len(grasp_joint_cfg)}\n\n\n\n\n\n\n\n\n\n\n")
         for joint_cfg in grasp_joint_cfg:
+            # set self.init_joint_pose to the current joint pose
+            current_joint_pose = self.get_joint_degree()
+            # self.robot = pb_ompl.PbOMPLRobot(self.env._panda.pandaUid, self.joint_idx, current_joint_pose)
             self.robot = pb_ompl.PbOMPLRobot(self.env._panda.pandaUid, self.joint_idx, self.init_joint_pose)
-            # self.obstacles = [self.env.plane_id, self.sim_furniture_id, self.sim_target_id]
-            self.obstacles = [self.env.plane_id, self.sim_furniture_id]
+            self.obstacles = [self.env.plane_id, self.sim_furniture_id, self.sim_target_id]
+            # self.obstacles = [self.env.plane_id, self.sim_furniture_id]
             self.setup_collision_detection(self.obstacles)
             self.pb_ompl_interface = pb_ompl.PbOMPL(self.robot, self.obstacles)
             self.pb_ompl_interface.set_planner("BITstar")
@@ -544,19 +626,32 @@ class ActorWrapper(object):
     
     def grasp_pose2grasp_joint(self, grasp_poses):        
         # This function convert the grasp poses into joint configs
-        grasp_joint_cfg = []
+        grasp_joint_list = []
         for grasp_array in grasp_poses:
             pos_orn = pack_pose(grasp_array)
-            grasp_joint_cfg.append(p.calculateInverseKinematics(self.env._panda.pandaUid,
+            grasp_joint_list.append(p.calculateInverseKinematics(self.env._panda.pandaUid,
                                         self.env._panda.pandaEndEffectorIndex,
                                         pos_orn[:3],
                                         ros_quat(pos_orn[3:]),
                                         maxNumIterations=500,
                                         residualThreshold=1e-8))
 
-        grasp_joint_cfg = np.array(grasp_joint_cfg)
 
-        return grasp_joint_cfg
+        grasp_joint_list = np.array(grasp_joint_list)
+        self.robot = pb_ompl.PbOMPLRobot(self.env._panda.pandaUid, self.joint_idx, self.init_joint_pose)
+        # self.obstacles = [self.env.plane_id, self.sim_furniture_id, self.sim_target_id]
+        self.obstacles = [self.env.plane_id, self.sim_furniture_id]
+        self.setup_collision_detection(self.obstacles)
+        self.pb_ompl_interface = pb_ompl.PbOMPL(self.robot, self.obstacles)
+        # self.pb_ompl_interface.set_planner("BITstar")
+
+        valid_joint_list = []
+        for grasp_joint in grasp_joint_list:
+            if self.pb_ompl_interface.is_state_valid(grasp_joint):
+                valid_joint_list.append(grasp_joint)
+            time.sleep(0.1)
+
+        return valid_joint_list
     
     def freeze_release(self, option=True):
         # This function will freeze target or release object, True for freeze
@@ -586,7 +681,7 @@ class ActorWrapper(object):
         retreat_joint_path.reverse()
 
 
-        for joint_con in joint_path:
+        for idx, joint_con in enumerate(joint_path):
             extend_joint_con = joint_con
             extend_joint_con.extend([0, 0, 0])
             p.setJointMotorControlArray(bodyUniqueId=self.env._panda.pandaUid,
@@ -597,11 +692,15 @@ class ActorWrapper(object):
                                         forces=[250, 250, 250, 250, 250, 250, 100, 100, 100],
                                         positionGains=[0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01],
                                         velocityGains=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+
             for _ in range(200):
                 p.stepSimulation()
+            
+            # if idx % 4 == 0:
+            #     _, _, _ = self.get_pc_state(frame="world", vis=True)
 
         # Slowly move to grasp pose
-        for _ in range(5):
+        for _ in range(4):
             self.env.step([0, 0, 0.01, 0, 0, 0])
         
         # Start to grasp
@@ -623,6 +722,21 @@ class ActorWrapper(object):
                 p.stepSimulation()
         
         self.env.place_back_objects()
+
+
+    def move2approach(self):
+        Joints = p.getJointStates(self.env._panda.pandaUid, [i for i in range(1, 7)])
+        Joints = np.array([i[0] for i in Joints])
+        print(f"Joints: {Joints}")
+        cur_state = np.append(Joints, 0)
+        # defined_position = [-0.1, -0.35, 1.75, -0.6, 1.571, 0.0, 0]  # right
+        # defined_position = [0.1, -0.35, 1.75, -0.6, 1.571, 0.0, 0]  # middle
+        defined_position = [0.13, -0.9, 1.9, -0.1, 1.571, 0.0, 0.0]  # left
+        way_point_num = 10
+        average_action = (defined_position - cur_state) / way_point_num
+        for i in range(1, way_point_num+1):
+            state = average_action * i + cur_state
+            self.env.step(state, config=True, repeat=300)[0]
 
 
 @ray.remote(num_cpus=1, num_gpus=0.12)
