@@ -47,6 +47,10 @@ class ros_node(object):
             obstacle_points, target_points, scene_points = self.actor.get_pc_state(frame="camera", vis=False)
             obstacle_points = obstacle_points[:, :3]
             target_points = target_points[:, :3]
+            
+            noise_stddev = 0.015/np.sqrt(3)
+            obstacle_points = obstacle_points + np.random.normal(scale=noise_stddev, size=obstacle_points.shape)
+            target_points = target_points + np.random.normal(scale=noise_stddev, size=target_points.shape)
 
             bridge = CvBridge()
             color_msg = bridge.cv2_to_imgmsg(np.uint8(color_image), encoding='bgr8')
@@ -76,8 +80,10 @@ class ros_node(object):
             obstacle_points = obstacle_points[:, :3]
             target_points = target_points[:, :3]
 
+            obstacle_points = obstacle_points + np.random.normal(scale=noise_stddev, size=obstacle_points.shape)
+            target_points = target_points + np.random.normal(scale=noise_stddev, size=target_points.shape)
             grasp_num = len(grasp_poses)
-            print(f"grasp_num: {grasp_num}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!1")
+            print(f"grasp_num: {grasp_num}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
             if grasp_num != 0:
                 grasp_list = []
                 score_list = []
@@ -124,16 +130,16 @@ class ros_node(object):
                 custom_msg.env_data.grasp_poses.layout.data_offset = 0
                 custom_msg.env_data.grasp_poses.data = grasp_poses_data_flat.tolist()
 
-                joint_path = np.reshape(np.array(self.simulation_client(custom_msg).joint_config.data), (30,  6))
-                
+                respond = self.simulation_client(custom_msg)
+                path_num = respond.joint_config.layout.dim[0].size
+                joint_path_list = np.reshape(np.array(respond.joint_config.data), (path_num, 30,  6))
 
-
-                if joint_path[0, 0] ==10.:
+                if joint_path_list.shape[0] == 0:
                     print(f"no valid path!")
                     self.actor.freeze_release(option=False) # To make the target object be released
                 else:
                     print(f"start moving!")
-                    self.actor.move2grasp(joint_path=joint_path.tolist()) # Remember, move2grasp will release the object itself
+                    self.actor.move2grasp(joint_path_list=joint_path_list.tolist()) # Remember, move2grasp will release the object itself
 
             else:
                 self.actor.freeze_release(option=False) # To make the target object be released
