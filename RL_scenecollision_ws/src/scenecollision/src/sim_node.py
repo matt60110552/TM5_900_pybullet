@@ -63,33 +63,49 @@ class ros_node(object):
 
 
         start_time = time.time()
-        path = np.array(self.actor.create_simulation_env(self.obs_pc_world,
-                                                         self.tar_pc_world,
-                                                         self.grasp_poses))
+        path_list, elbow_list = self.actor.create_simulation_env(self.obs_pc_world,
+                                                                 self.tar_pc_world,
+                                                                 self.grasp_poses)
+        path_list = np.array(path_list)
+        elbow_list = np.array(elbow_list)
+
+        dis_list = []
+        for i in range(len(elbow_list)):
+            elbow_path = elbow_list[i]
+            dis = 0
+            for j in range(1, len(elbow_path)):
+                dis += np.sqrt(np.sum((elbow_path[j] - elbow_path[j-1])**2))
+            dis_list.append(dis)
+        
+        print(f"dis_list: {dis_list}")
 
         print(f"\n\n\n\n\npath's consuming time: {time.time() - start_time}\n\n\n\n\n")
-
+        print(f"path_list.shape: {path_list.shape}")
+        path_num = path_list.shape[0]
         path_response = path_planningResponse()
-        for _ in range(2):
+        for _ in range(3):
             path_response.joint_config.layout.dim.append(std_msgs.msg.MultiArrayDimension())
         path_response.joint_config.layout.dim[0].label = "path_num"
-        path_response.joint_config.layout.dim[0].size = 30  # Size of path, default is 30
-        path_response.joint_config.layout.dim[0].stride = 30*6  # Size of each waypoint
+        path_response.joint_config.layout.dim[0].size = path_num  # Number of path, default is 30
+        path_response.joint_config.layout.dim[0].stride = path_num*30*6  # Size of each path
+        path_response.joint_config.layout.data_offset = 0    
+        path_response.joint_config.layout.dim[1].label = "path_len"
+        path_response.joint_config.layout.dim[1].size = 30  # Length of path, default is 30
+        path_response.joint_config.layout.dim[1].stride = 30*6  # Total size of waypoints
         path_response.joint_config.layout.data_offset = 0
-        path_response.joint_config.layout.dim[1].label = "joint_num"
-        path_response.joint_config.layout.dim[1].size = 6 
-        path_response.joint_config.layout.dim[1].stride = 6
+        path_response.joint_config.layout.dim[2].label = "joint_num"
+        path_response.joint_config.layout.dim[2].size = 6 
+        path_response.joint_config.layout.dim[2].stride = 6
         path_response.joint_config.layout.data_offset = 0
 
 
-        if path.all() == None:
+        if path_list.all() == None:
             print(f"no path")
-            tmp_list = (10.*np.ones((30, 6))).flatten().tolist() 
-            print(f"tmp_list: {type(tmp_list[0])}")
+            tmp_list = (10.*np.ones((1, 30, 6))).flatten().tolist() 
             path_response.joint_config.data = tmp_list
         else:
             # The shape of path is (30, 6)
-            path_flatten = path.flatten()
+            path_flatten = path_list.flatten()
             path_response.joint_config.data = path_flatten.tolist()
 
         return path_response
