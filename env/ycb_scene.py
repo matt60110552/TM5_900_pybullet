@@ -176,10 +176,10 @@ class SimulatedYCBEnv():
             self.furniture_z = 0.52
         elif self.furniture_name == "carton_box":
             furniture_file = os.path.join(self.root_dir,  'data/objects/carton_box/model.urdf')
-            self.furniture_pos = np.array([0.6, 0.0, 0.01])
+            self.furniture_pos = np.array([0.55, 0.0, 0.06])
             self.furniture_id = p.loadURDF(furniture_file, [self.furniture_pos[0], self.furniture_pos[1], self.furniture_pos[2]],
                                            [0., 0., 0., 1.], useFixedBase=True)
-            self.furniture_z = 0.25
+            self.furniture_z = 0.33
 
         self.obj_path = [plane_file, furniture_file]
 
@@ -621,8 +621,8 @@ class SimulatedYCBEnv():
             xpos = 0.6 + random.uniform(-0.04, 0.05)
             ypos = random.uniform(-0.25, 0.25)
         elif self.furniture_name == "carton_box":
-            xpos = 0.6 + random.uniform(-0.04, 0.05)
-            ypos = random.uniform(-0.28, 0.28)
+            xpos = 0.55 + random.uniform(-0.04, 0.05)
+            ypos = random.uniform(-0.22, 0.22)
 
 
         obj_path = '/'.join(urdfList[0].split('/')[:-1]) + '/'

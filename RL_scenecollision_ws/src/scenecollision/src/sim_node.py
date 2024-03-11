@@ -49,38 +49,23 @@ class ros_node(object):
         for i in request.env_data.grasp_poses.layout.dim:
             dims.append(i.size)
 
-        grasp_poses_camera = np.array(request.env_data.grasp_poses.data, dtype=np.float32).reshape(dims)
-
-        # Convert the grasp poses' frame from camera to world(base)
-        self.grasp_poses = []
-        ef_pose = self.actor.env._get_ef_pose('mat')
-        for grasp_pose_camera in grasp_poses_camera:
-            self.grasp_poses.append(np.dot(ef_pose, np.dot(self.actor.env.cam_offset, grasp_pose_camera)))
-        self.grasp_poses = np.array(self.grasp_poses)
-        
+        self.grasp_poses = np.array(request.env_data.grasp_poses.data, dtype=np.float32).reshape(dims)
         self.grasp_poses = self.grasp2pre_grasp(self.grasp_poses, drawback_dis=0.04) # Drawback a little
+        self.grasp_scores = np.array(request.env_data.scores).reshape(len(self.grasp_poses))
 
 
 
         start_time = time.time()
-        path_list, elbow_list = self.actor.create_simulation_env(self.obs_pc_world,
+        path_list, elbow_list, gripper_pos_list, gripper_orn_list = self.actor.create_simulation_env(self.obs_pc_world,
                                                                  self.tar_pc_world,
-                                                                 self.grasp_poses)
+                                                                 self.grasp_poses,
+                                                                 self.grasp_scores)
         path_list = np.array(path_list)
         elbow_list = np.array(elbow_list)
+        gripper_pos_list = np.array(gripper_pos_list)
+        gripper_orn_list = np.array(gripper_orn_list)
 
-        dis_list = []
-        for i in range(len(elbow_list)):
-            elbow_path = elbow_list[i]
-            dis = 0
-            for j in range(1, len(elbow_path)):
-                dis += np.sqrt(np.sum((elbow_path[j] - elbow_path[j-1])**2))
-            dis_list.append(dis)
-        
-        print(f"dis_list: {dis_list}")
 
-        print(f"\n\n\n\n\npath's consuming time: {time.time() - start_time}\n\n\n\n\n")
-        print(f"path_list.shape: {path_list.shape}")
         path_num = path_list.shape[0]
         path_response = path_planningResponse()
         for _ in range(3):
@@ -105,6 +90,21 @@ class ros_node(object):
             path_response.joint_config.data = tmp_list
         else:
             # The shape of path is (30, 6)
+            
+            # Get the smoothness of the path
+            max_curvation_list = []
+            for gripper_pos_path in  gripper_pos_list:
+                max_curvation_list.append(self.curvature_decision(gripper_pos_path))
+            
+            for maxcur in max_curvation_list:
+                print(f"maxcur: {maxcur}")
+
+            # path_list = [x for _, x in sorted(zip(max_curvation_list, path_list))]
+            # path_list = np.array(path_list)
+            sorted_indices = np.argsort(max_curvation_list)
+            path_list = np.array(path_list)[sorted_indices]
+            
+            
             path_flatten = path_list.flatten()
             path_response.joint_config.data = path_flatten.tolist()
 
@@ -116,17 +116,48 @@ class ros_node(object):
         drawback_matrix = np.identity(4)
         drawback_matrix[2, 3] = -drawback_dis
 
-        rotation_matrix_180_deg = np.array([[-1, 0, 0],
-                                            [0, -1, 0],
-                                            [0, 0, 1]])
         result_poses = []
         for i in range(len(grasp_poses)):
             grasp_candidate = np.dot(grasp_poses[i], drawback_matrix)
-            rotate_grasp_candidate = copy.deepcopy(grasp_candidate)
-            rotate_grasp_candidate[:3, :3] = np.dot(rotation_matrix_180_deg, rotate_grasp_candidate[:3, :3])
             result_poses.append(grasp_candidate)
-            result_poses.append(rotate_grasp_candidate)
-        return result_poses
+        return np.array(result_poses)
+    
+    def gripper_change(self, positions, orientations):
+        gripper_change_list = []
+        for i in range(1, len(positions)):
+            # Calculate displacement vector between consecutive positions
+            displacement = positions[i] - positions[i-1]
+            
+            # Check if the gripper is moving forward
+            is_moving_forward = np.dot(displacement, orientations[i-1])
+            gripper_change_list.append(is_moving_forward)
+        return gripper_change_list
+
+    def curvature_decision(self, path_points):
+        # Calculate the curvature at each point along the path
+        num_points = len(path_points)
+        curvatures = np.zeros(num_points)
+
+        for i in range(1, num_points - 1):
+            # Calculate vectors between neighboring points
+            v1 = path_points[i] - path_points[i-1]
+            v2 = path_points[i+1] - path_points[i]
+
+            # Calculate cross product to find the perpendicular vector
+            cross_product = np.cross(v1, v2)
+
+            # Calculate the length of vectors
+            length_v1 = np.linalg.norm(v1)
+            length_v2 = np.linalg.norm(v2)
+
+            # Calculate the curvature at the point
+            if length_v1 != 0 and length_v2 != 0:
+                curvature = 2 * np.linalg.norm(cross_product) / (length_v1 * length_v2 * (length_v1 + length_v2))
+                curvatures[i] = curvature
+
+        # Make a decision based on the maximum curvature
+        max_curvature = np.max(curvatures)
+        return max_curvature
 
 if __name__ == "__main__":
     rospy.init_node("sim")
