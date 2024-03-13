@@ -210,7 +210,7 @@ class SimulatedYCBEnv():
         self.init_target_height = self._get_target_relative_pose()[2, 3]
         return None  # observation
 
-    def step(self, action, delta=False, obs=True, repeat=200, config=False, vis=False):
+    def step(self, action, delta=False, obs=True, repeat=200, config=False, vis=False, raw_data=False):
         """
         Environment step.
         """
@@ -221,11 +221,22 @@ class SimulatedYCBEnv():
             if self._renders:
                 time.sleep(self._timeStep)
 
-        observation = self._get_observation(vis=vis)
+        observation = self._get_observation(vis=vis, raw_data=raw_data)
 
         reward = self.target_lifted()
 
         return observation, reward, self._get_ef_pose(mat=True)
+    
+    def move(self, action, delta=False, obs=True, repeat=200, config=False, vis=False, raw_data=False):
+        """
+        This function is the "step" function's another version, without observation
+        """
+        action = self.process_action(action, delta, config)
+        self._panda.setTargetPositions(action)
+        for _ in range(int(repeat)):
+            p.stepSimulation()
+            if self._renders:
+                time.sleep(self._timeStep)
 
     def _get_observation(self, pose=None, vis=False, raw_data=False, no_gripper=False):
         """

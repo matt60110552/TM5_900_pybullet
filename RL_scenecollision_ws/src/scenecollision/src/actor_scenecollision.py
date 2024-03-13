@@ -33,9 +33,9 @@ class ActorWrapper(object):
         file_dir = [f[:-5] for f in file_dir]
         test_file_dir = list(set(file_dir))
         test_file_dir = random.sample(test_file_dir, 15)
-        self.furniture_name = "carton_box"
+        # self.furniture_name = "carton_box"
         # self.furniture_name = "table"
-        # self.furniture_name = "cabinet"
+        self.furniture_name = "cabinet"
         self.env = SimulatedYCBEnv(renders=renders)
         self.env._load_index_objs(test_file_dir)
         self.env.reset(save=False, enforce_face_target=True, furniture=self.furniture_name)
@@ -310,20 +310,28 @@ class ActorWrapper(object):
         con_action = np.array([i[0] for i in con_action])
         return con_action
 
-    def get_pc_state(self, vis=False, frame="camera"):
+    def get_pc_state(self, vis=False, frame="camera", target_only=False):
         """
         The output pointcloud should (N, 4)
         """
-        obstacle_points = self.get_world_pointcloud(raw_data="obstacle")
-        target_points = self.get_world_pointcloud(raw_data=False)
-
-        self.obstacle_points = self.concatenate_pc(self.obstacle_points, obstacle_points)
-        self.target_points = self.concatenate_pc(self.target_points, target_points)
-        scene_points = self.concatenate_pc(self.target_points, self.obstacle_points)
-        obstacle_points = np.hstack((self.obstacle_points, np.zeros((self.obstacle_points.shape[0], 1))))
-        target_points = np.hstack((self.target_points, np.ones((self.target_points.shape[0], 1))))
-        scene_points = np.hstack((scene_points, 2 * np.ones((scene_points.shape[0], 1))))
-
+        if target_only:
+            target_points = self.get_world_pointcloud(raw_data=False)
+            self.target_points = self.concatenate_pc(self.target_points, target_points)
+            obstacle_points = self.obstacle_points
+            scene_points = self.obstacle_points
+            obstacle_points = np.hstack((self.obstacle_points, np.zeros((self.obstacle_points.shape[0], 1))))
+            target_points = np.hstack((self.target_points, np.ones((self.target_points.shape[0], 1))))
+            scene_points = np.hstack((scene_points, 2 * np.ones((scene_points.shape[0], 1))))
+        else:
+            obstacle_points = self.get_world_pointcloud(raw_data="obstacle")
+            target_points = self.get_world_pointcloud(raw_data=False)
+            self.obstacle_points = self.concatenate_pc(self.obstacle_points, obstacle_points)
+            self.target_points = self.concatenate_pc(self.target_points, target_points)
+            scene_points = self.concatenate_pc(self.target_points, self.obstacle_points)
+            obstacle_points = np.hstack((self.obstacle_points, np.zeros((self.obstacle_points.shape[0], 1))))
+            target_points = np.hstack((self.target_points, np.ones((self.target_points.shape[0], 1))))
+            scene_points = np.hstack((scene_points, 2 * np.ones((scene_points.shape[0], 1))))
+        
         # # transform back to camera frame
         if frame == "camera":
             obstacle_points = self.base2camera(obstacle_points)
@@ -336,7 +344,7 @@ class ActorWrapper(object):
             axis_pcd = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
             # o3d.visualization.draw_geometries([all_o3d_pc]+[target_o3d_pc]+[axis_pcd])
             o3d.visualization.draw_geometries([all_o3d_pc]+[axis_pcd])
-
+        
         return obstacle_points, target_points, scene_points
 
     def concatenate_pc(self, pc_old, pc_new):
@@ -395,73 +403,85 @@ class ActorWrapper(object):
 
 
     def create_simulation_env(self, obs_pc=None, target_pc=None, grasp_poses=None, grasp_scores=None):
-        # This function is only for sim_actor_id, the real_actor_id won't enter here
-        self.env.place_back_objects()
-        p.resetBasePositionAndOrientation(self.env.furniture_id, [0, 0, 4], [0, 0, 0, 1])
+        if obs_pc is not None and target_pc is not None:
+            # This function is only for sim_actor_id, the real_actor_id won't enter here
+            self.env.place_back_objects()
+            p.resetBasePositionAndOrientation(self.env.furniture_id, [0, 0, 4], [0, 0, 0, 1])
 
 
-        starttime = time.time()
-        # self.sim_furniture_id, self.sim_target_id = self.create_obstacle_from_pc(obs_pc, target_pc)
-        self.sim_furniture_id = self.create_obstacle_from_pc(obs_pc, target_pc)
-        print(f"simulate duration: {time.time()-starttime}!!!!!!!!!!!!!!!!!")
-        # Be careful, the list of score will increase due to the rotate of the 6th joint
-        grasp_joint_list, elbow_pos_list, grasp_score_list = self.grasp_pose2grasp_joint(grasp_poses=grasp_poses,
-                                                                       grasp_scores=grasp_scores)
-        grasp_joint_list = np.array(grasp_joint_list)
-        elbow_pos_list = np.array(elbow_pos_list)
+            starttime = time.time()
+            # self.sim_furniture_id, self.sim_target_id = self.create_obstacle_from_pc(obs_pc, target_pc)
+            self.sim_furniture_id = self.create_obstacle_from_pc(obs_pc, target_pc)
+            print(f"simulate duration: {time.time()-starttime}!!!!!!!!!!!!!!!!!")
+            # Be careful, the list of score will increase due to the rotate of the 6th joint
+            (grasp_joint_list, grasp_poses_list,
+            elbow_pos_list, grasp_score_list) = self.grasp_pose2grasp_joint(grasp_poses=grasp_poses,
+                                                                        grasp_scores=grasp_scores)
+            grasp_joint_list = np.array(grasp_joint_list)
+            elbow_pos_list = np.array(elbow_pos_list)
+            grasp_poses_list = np.array(grasp_poses_list)
+            path_start_time = time.time()
+            if len(elbow_pos_list) == 0:
+                None_path_list = [[[None] * 6 for _ in range(30)]]
+                print(f"None_path_list: {np.array(None_path_list).shape}")
+                return None_path_list,None_path_list, None_path_list, None_path_list, None_path_list  # make the None path list's shape like (1, 30, 6)
+            elif len(elbow_pos_list) == 1:
+                (path_list,
+                elbow_path_list,
+                gripper_pos_list,
+                gripper_orn_list) = self.motion_planning(grasp_joint_cfg=grasp_joint_list,
+                                                        elbow_pos_list=elbow_pos_list)
+            else:
+                highest_joint_cfg_list = []
+                highest_elbow_pos_list = []
+                highest_grasp_poses_list = []
+                epsilon = 0.03  # Maximum distance between samples for one to be considered as in the neighborhood of the other
+                min_samples = 1  # Minimum number of samples in a neighborhood for a data point to be considered as a core point
+                dbscan = DBSCAN(eps=epsilon, min_samples=min_samples).fit(elbow_pos_list)
+                elbow_pos_groups = {}
+                joint_value_groups = {}
+                scores_groups = {}
+                grasp_poses_group = {}
+                for idx, label in enumerate(dbscan.labels_):
+                    elbow_pos_groups.setdefault(label, []).append(elbow_pos_list[idx])
+                    joint_value_groups.setdefault(label, []).append(grasp_joint_list[idx])
+                    scores_groups.setdefault(label, []).append(grasp_score_list[idx])
+                    grasp_poses_group.setdefault(label, []).append(grasp_poses_list[idx])
+                
+                # Get the grasp poses with highest score in each groups
+                keys = set(joint_value_groups.keys())
+                for key in keys:
+                    tmp_elbow_poses_list = elbow_pos_groups.pop(key)
+                    tmp_grasp_joint_cfgs_list = joint_value_groups.pop(key)
+                    tmp_scores_list = scores_groups.pop(key)
+                    tmp_grasp_poses_list = grasp_poses_group.pop(key)
+                    highest_joint_cfg_list.append(tmp_grasp_joint_cfgs_list[np.argmax(tmp_scores_list)])
+                    highest_elbow_pos_list.append(tmp_elbow_poses_list[np.argmax(tmp_scores_list)])
+                    highest_grasp_poses_list.append(tmp_grasp_poses_list[np.argmax(tmp_scores_list)])
 
-        path_start_time = time.time()
-        if len(elbow_pos_list) == 0:
-            None_path_list = [[[None] * 6 for _ in range(30)]]
-            print(f"None_path_list: {np.array(None_path_list).shape}")
-            return None_path_list, None_path_list, None_path_list, None_path_list  # make the None path list's shape like (1, 30, 6)
-        elif len(elbow_pos_list) == 1:
-            (path_list,
-            elbow_path_list,
-            gripper_pos_list,
-            gripper_orn_list) = self.motion_planning(grasp_joint_cfg=grasp_joint_list,
-                                                     elbow_pos_list=elbow_pos_list)
+                highest_joint_cfg_list = np.array(highest_joint_cfg_list)
+                highest_elbow_pos_list = np.array(highest_elbow_pos_list)
+                highest_grasp_poses_list = np.array(highest_grasp_poses_list)
+                print(f"highest_joint_cfg_list: {len(highest_joint_cfg_list)}")
+                print(f"highest_elbow_pos_list: {len(highest_elbow_pos_list)}")
+                print(f"highest_grasp_poses_list: {len(highest_grasp_poses_list)}")
+                grasp_poses_list = highest_grasp_poses_list
+                (path_list, 
+                elbow_path_list, 
+                gripper_pos_list, 
+                gripper_orn_list) = self.motion_planning(grasp_joint_cfg=highest_joint_cfg_list,
+                                                        elbow_pos_list=highest_elbow_pos_list)
+
+            print(f"path_planning_time: {time.time() - path_start_time}")
+            
+            p.removeBody(self.sim_furniture_id)
+            # p.removeBody(self.sim_target_id)
+
+
+            return path_list, grasp_poses_list, elbow_path_list, gripper_pos_list, gripper_orn_list
         else:
-            highest_joint_cfg_list = []
-            highest_elbow_pos_list = []
-            epsilon = 0.03  # Maximum distance between samples for one to be considered as in the neighborhood of the other
-            min_samples = 1  # Minimum number of samples in a neighborhood for a data point to be considered as a core point
-            dbscan = DBSCAN(eps=epsilon, min_samples=min_samples).fit(elbow_pos_list)
-            elbow_pos_groups = {}
-            joint_value_groups = {}
-            scores_groups = {}
-            for idx, label in enumerate(dbscan.labels_):
-                elbow_pos_groups.setdefault(label, []).append(elbow_pos_list[idx])
-                joint_value_groups.setdefault(label, []).append(grasp_joint_list[idx])
-                scores_groups.setdefault(label, []).append(grasp_score_list[idx])
+            return self.grasp_pose2grasp_joint(grasp_poses=grasp_poses, grasp_scores=None)
             
-            
-            # Get the grasp poses with highest score in each groups
-            keys = set(joint_value_groups.keys())
-            for key in keys:
-                tmp_elbow_poses_list = elbow_pos_groups.pop(key)
-                tmp_grasp_joint_cfgs_list = joint_value_groups.pop(key)
-                tmp_scores_list = scores_groups.pop(key)
-                highest_joint_cfg_list.append(tmp_grasp_joint_cfgs_list[np.argmax(tmp_scores_list)])
-                highest_elbow_pos_list.append(tmp_elbow_poses_list[np.argmax(tmp_scores_list)])
-
-            highest_joint_cfg_list = np.array(highest_joint_cfg_list)
-            highest_elbow_pos_list = np.array(highest_elbow_pos_list)
-            print(f"highest_joint_cfg_list: {len(highest_joint_cfg_list)}")
-            print(f"highest_elbow_pos_list: {len(highest_elbow_pos_list)}")
-            (path_list,
-            elbow_path_list,
-            gripper_pos_list,
-            gripper_orn_list) = self.motion_planning(grasp_joint_cfg=highest_joint_cfg_list,
-                                                     elbow_pos_list=highest_elbow_pos_list)
-
-        print(f"path_planning_time: {time.time() - path_start_time}")
-        
-        p.removeBody(self.sim_furniture_id)
-        # p.removeBody(self.sim_target_id)
-
-
-        return path_list, elbow_path_list, gripper_pos_list, gripper_orn_list
 
     def extend_obs_pc(self, obs_pc, target_pc, scale_factor=0.02):
         # This function "extend" the obstacle pointcloud outward a little,
@@ -568,9 +588,6 @@ class ActorWrapper(object):
         init_elbow_pos = np.array(init_elbow_pos)
         # sort the grasp_joint_cfg according to the elbow's distance
         dis = np.linalg.norm(elbow_pos_list - init_elbow_pos, axis=1)
-        print(f"elbow_pos_list: {elbow_pos_list}")
-        print(f"init_elbow_pos: {init_elbow_pos}")
-        print(f"dis: {dis}")
         sorted_grasp_joint_cfg = grasp_joint_cfg[np.argsort(dis)]
         
         print(f"sorted_grasp_joint_cfg: {len(sorted_grasp_joint_cfg)}")
@@ -600,7 +617,7 @@ class ActorWrapper(object):
                 # self.obstacles = [self.env.plane_id, self.sim_furniture_id, self.sim_target_id]
                 self.obstacles = [self.env.plane_id, self.sim_furniture_id]
                 self.setup_collision_detection(self.obstacles)
-                start_state = path_list[0][5][:6]
+                start_state = path_list[0][10][:6]
                 print(f"start_state: {start_state}")
                 # Planning in new configuration subspace
                 sub_joint_bounds = copy.deepcopy(self.joint_bounds)
@@ -616,7 +633,7 @@ class ActorWrapper(object):
                 (res, extend_path,
                 extend_elbow_path,
                 extend_gripper_pos_path,
-                extend_gripper_orn_path) = self.pb_ompl_interface.plan(joint_cfg[:6], interpolate_num=25, allowed_time=4)
+                extend_gripper_orn_path) = self.pb_ompl_interface.plan(joint_cfg[:6], interpolate_num=20, allowed_time=4)
                 print(f"extend_path: {len(extend_path)}\n\n")
                 if res:
                     path = copy.deepcopy(path_list[0][:-len(extend_path)])
@@ -637,211 +654,90 @@ class ActorWrapper(object):
 
 
         return path_list, elbow_path_list, gripper_pos_list, gripper_orn_list
-        """
-        # Deal with the path from reset pose to pregrasp pose, self.robot is initiated here
-        # because the point can be tagged valid after searched, so refresh it before every 
-        # motion_planning
-        print(f"grasp_joint_cfg: {len(grasp_joint_cfg)}")
-        start_idx = -1
-        path_list = []
-        elbow_path_list = []
-        gripper_pos_list = []
-        gripper_orn_list = []
-        first_path = None
-        for idx, joint_cfg in enumerate(grasp_joint_cfg):
-            # set self.init_joint_pose to the current joint pose
+    
+    def grasp_pose2grasp_joint(self, grasp_poses, grasp_scores):        
+        if grasp_scores is not None:
+            # This function convert the grasp poses into joint configs
+            grasp_joint_list = []
+            score_list = []
+            grasp_poses_list = []
+            for idx, grasp_array in enumerate(grasp_poses):
+                pos_orn = pack_pose(grasp_array)
+                # pos_orn_list.append(pos_orn)
+                joint_cfg = list(p.calculateInverseKinematics(self.env._panda.pandaUid,
+                                                        self.env._panda.pandaEndEffectorIndex,
+                                                        pos_orn[:3],
+                                                        ros_quat(pos_orn[3:]),
+                                                        maxNumIterations=500,
+                                                        residualThreshold=1e-8))
+
+                grasp_joint_list.append(joint_cfg)
+                score_list.append(grasp_scores[idx])
+                grasp_poses_list.append(grasp_array)
+                new_joint_cfg = copy.deepcopy(joint_cfg)
+                new_grasp_array = copy.deepcopy(grasp_array)
+                new_joint_cfg[5] += np.pi if new_joint_cfg[5] < 0 else -np.pi
+                new_grasp_array[0,:3] *= -1
+                new_grasp_array[1,:3] *= -1
+                grasp_joint_list.append(new_joint_cfg)
+                score_list.append(grasp_scores[idx])
+                grasp_poses_list.append(new_grasp_array)
+
+            grasp_joint_list = np.array(grasp_joint_list)
             self.robot = pb_ompl.PbOMPLRobot(self.env._panda.pandaUid, self.joint_idx, self.init_joint_pose)
             # self.obstacles = [self.env.plane_id, self.sim_furniture_id, self.sim_target_id]
             self.obstacles = [self.env.plane_id, self.sim_furniture_id]
             self.setup_collision_detection(self.obstacles)
-            self.pb_ompl_interface = pb_ompl.PbOMPL(self.robot, self.obstacles, joint_bounds=self.joint_bounds)
-            self.pb_ompl_interface.set_planner("BITstar")
-            start_state = np.array(self.env._panda.getJointStates()[0])[:6]
-            self.robot.set_state(start_state)
-            (res, first_path,
-             first_elbow_path,
-             first_gripper_pos_path,
-             first_gripper_orn_path) = self.pb_ompl_interface.plan(joint_cfg[:6])
-            if res:
-                start_idx = idx
-                path_list.append(first_path)
-                elbow_path_list.append(first_elbow_path)
-                gripper_pos_list.append(first_gripper_pos_path)
-                gripper_orn_list.append(first_gripper_orn_path)
-                break
+            self.pb_ompl_interface = pb_ompl.PbOMPL(self.robot, self.obstacles)
 
-        if start_idx != -1:
-            # Assign the start joint_value and elbow_position
-            start_elbow_pos = elbow_pos_list[start_idx]
-            start_joint_value = grasp_joint_cfg[start_idx]
-            # Dbscan part, sort the grasp pose depend on the elbow's position
-            epsilon = 0.05  # Maximum distance between samples for one to be considered as in the neighborhood of the other
-            min_samples = 1  # Minimum number of samples in a neighborhood for a data point to be considered as a core point
-            dbscan = DBSCAN(eps=epsilon, min_samples=min_samples).fit(elbow_pos_list)
-            elbow_pos_groups = {}
-            joint_value_groups = {}
-            first_group_label = -1
-            for idx, label in enumerate(dbscan.labels_):
-                elbow_pos_groups.setdefault(label, []).append(elbow_pos_list[idx])
-                joint_value_groups.setdefault(label, []).append(grasp_joint_cfg[idx])
-                if idx == start_idx:
-                    # print(f"idx: {elbow_pos_list[idx], grasp_joint_cfg[idx]}")
-                    first_group_label = label
-                    # print(f"first_group_label: {first_group_label}")
+            valid_joint_list = []
+            valid_elbow_list = []
+            valid_score_list = []
+            valid_grasp_list = []
+            for idx, grasp_joint in enumerate(grasp_joint_list):
+                if self.pb_ompl_interface.is_state_valid(grasp_joint):
+                    valid_joint_list.append(grasp_joint)
+                    elbow_pos, _ = p.getLinkState(self.env._panda.pandaUid, 5)[4:6]
+                    valid_elbow_list.append(elbow_pos)
+                    valid_score_list.append(score_list[idx])
+                    valid_grasp_list.append(grasp_poses_list[idx])
+                # time.sleep(0.005)
 
-
+            return valid_joint_list, valid_grasp_list, valid_elbow_list, valid_score_list
+        else:
+            """
+            Turn poses in cartesian into joint space and then check they are valid or not 
+            """
+            # The grasp_poses here are middle waypoint in cartesian space
+            mid_joint_list = []
+            for idx, mid_waypoint in enumerate(grasp_poses):
+                pos_orn = pack_pose(mid_waypoint)
+                # pos_orn_list.append(pos_orn)
+                mid_joint_cfg = list(p.calculateInverseKinematics(self.env._panda.pandaUid,
+                                                        self.env._panda.pandaEndEffectorIndex,
+                                                        pos_orn[:3],
+                                                        ros_quat(pos_orn[3:]),
+                                                        maxNumIterations=500,
+                                                        residualThreshold=1e-8))
+                mid_joint_list.append(mid_joint_cfg)
             
-
-            nearest_grasp_joint_cfg_list = joint_value_groups.pop(first_group_label)
-            remain_grasp_joint_cfg_groups = joint_value_groups
-            nearest_elbow_pos_list = elbow_pos_groups.pop(first_group_label)
-            remain_elbow_pos_groups = elbow_pos_groups
-            print(f"len(nearest_grasp_joint_cfg_list): {len(nearest_grasp_joint_cfg_list)}")
-            # Start web rrt for the grasp config near the first path
-            # web1_time = time.time()
-            # for grasp_cfg in nearest_grasp_joint_cfg_list:
-            #     print(f"web RRT1!!!!!!!!!!!!!!!")
-            #     self.robot = pb_ompl.PbOMPLRobot(self.env._panda.pandaUid, self.joint_idx, self.init_joint_pose)
-            #     # self.obstacles = [self.env.plane_id, self.sim_furniture_id, self.sim_target_id]
-            #     self.obstacles = [self.env.plane_id, self.sim_furniture_id]
-            #     self.setup_collision_detection(self.obstacles)
-
-            #     start_state = first_path[-4][:6]
-            #     sub_joint_bounds = copy.deepcopy(self.joint_bounds)
-            #     sub_joint_bounds[1] = (min(grasp_cfg[1], start_state[1]),
-            #                            max(grasp_cfg[1], start_state[1]))
-            #     sub_joint_bounds[2] = (min(grasp_cfg[2], start_state[2]),
-            #                            max(grasp_cfg[2], start_state[2]))
-
-            #     self.pb_ompl_interface = pb_ompl.PbOMPL(self.robot, self.obstacles, joint_bounds=sub_joint_bounds)
-            #     # self.pb_ompl_interface = pb_ompl.PbOMPL(self.robot, self.obstacles, joint_bounds=self.joint_bounds)
-            #     self.pb_ompl_interface.set_planner("BITstar")
-            #     self.robot.set_state(start_state)
-            #     (res, extend_path,
-            #      extend_elbow_path,
-            #      extend_gripper_pos_path,
-            #      extend_gripper_orn_path) = self.pb_ompl_interface.plan(grasp_cfg[:6], interpolate_num=3, allowed_time=5)
-            #     if res:
-            #         path = copy.deepcopy(first_path[:-len(extend_path)])
-            #         path.extend(extend_path)
-            #         path_list.append(np.array(path))
-            #         print(f"path0: {len(path)}")
-
-            #         elbow_path = copy.deepcopy(first_elbow_path[:-len(extend_elbow_path)])
-            #         elbow_path.extend(extend_elbow_path)
-            #         elbow_path_list.append(np.array(elbow_path))
-
-            #         gripper_pos_path = copy.deepcopy(first_gripper_pos_path[:-len(extend_gripper_pos_path)])
-            #         gripper_pos_path.extend(extend_gripper_pos_path)
-            #         gripper_pos_list.append(np.array(gripper_pos_path))
-
-            #         gripper_orn_path = copy.deepcopy(first_gripper_orn_path[:-len(extend_gripper_orn_path)])
-            #         gripper_orn_path.extend(extend_gripper_orn_path)
-            #         gripper_orn_list.append(np.array(gripper_orn_path))
-            # print(f"web1's time: {time.time() - web1_time}\n\n\n")
-
-            # Start web rrt for the grasp config that are not near the first path
-            keys = set(remain_grasp_joint_cfg_groups.keys())
-            web2_time = time.time()
-            for key in keys:
-                remain_elbow_pos_list =  remain_elbow_pos_groups.pop(key)
-                remain_grasp_joint_cfg_list = remain_grasp_joint_cfg_groups.pop(key)
-                start_waypoint = first_elbow_path[-8] # set the 23th waypoint as start point of the new path
-                distance = np.linalg.norm(np.array(remain_elbow_pos_list) - np.array(start_waypoint), axis=1)
-                closet_grasp_joint_cfg = remain_grasp_joint_cfg_list[np.argmin(distance)]
-
-                print(f"web RRT2!!!!!!!!!!!!!!!")
-                self.robot = pb_ompl.PbOMPLRobot(self.env._panda.pandaUid, self.joint_idx, self.init_joint_pose)
-                # self.obstacles = [self.env.plane_id, self.sim_furniture_id, self.sim_target_id]
-                self.obstacles = [self.env.plane_id, self.sim_furniture_id]
-                self.setup_collision_detection(self.obstacles)
-                start_state = first_path[-9][:6]
-                # Planning in new configuration subspace
-                sub_joint_bounds = copy.deepcopy(self.joint_bounds)
-                sub_joint_bounds[1] = (min(closet_grasp_joint_cfg[1], start_state[1]),
-                                       max(closet_grasp_joint_cfg[1], start_state[1]))
-                sub_joint_bounds[2] = (min(closet_grasp_joint_cfg[2], start_state[2]),
-                                       max(closet_grasp_joint_cfg[2], start_state[2]))
-                self.pb_ompl_interface = pb_ompl.PbOMPL(self.robot, self.obstacles, joint_bounds=sub_joint_bounds)
-                # self.pb_ompl_interface = pb_ompl.PbOMPL(self.robot, self.obstacles, joint_bounds=self.joint_bounds)
-                self.pb_ompl_interface.set_planner("BITstar")
-
-                self.robot.set_state(start_state)
-                (res, extend_path,
-                extend_elbow_path,
-                extend_gripper_pos_path,
-                extend_gripper_orn_path) = self.pb_ompl_interface.plan(closet_grasp_joint_cfg[:6], interpolate_num=5, allowed_time=5)
-                print(f"extend_path: {len(extend_path)}\n\n")
-                if res:
-                    path = copy.deepcopy(first_path[:-len(extend_path)])
-                    path.extend(extend_path)
-                    path_list.append(np.array(path))
-
-                    elbow_path = copy.deepcopy(first_elbow_path[:-len(extend_elbow_path)])
-                    elbow_path.extend(extend_elbow_path)
-                    elbow_path_list.append(np.array(elbow_path))
-
-                    gripper_pos_path = copy.deepcopy(first_gripper_pos_path[:-len(extend_gripper_pos_path)])
-                    gripper_pos_path.extend(extend_gripper_pos_path)
-                    gripper_pos_list.append(np.array(gripper_pos_path))
-
-                    gripper_orn_path = copy.deepcopy(first_gripper_orn_path[:-len(extend_gripper_orn_path)])
-                    gripper_orn_path.extend(extend_gripper_orn_path)
-                    gripper_orn_list.append(np.array(gripper_orn_path))
-            print(f"web2's time: {time.time() - web2_time}\n\n\n")
-
-
-        for i in range(len(path_list)):
-            print(f"path_list: {len(path_list[i])}")
-        path_list = np.array(path_list)
-        elbow_path_list = np.array(elbow_path_list)
-        gripper_pos_list = np.array(gripper_pos_list)
-        gripper_orn_list = np.array(gripper_orn_list)
-
-
-        return path_list, elbow_path_list, gripper_pos_list, gripper_orn_list
-        """
-    
-    def grasp_pose2grasp_joint(self, grasp_poses, grasp_scores):        
-        # This function convert the grasp poses into joint configs
-        grasp_joint_list = []
-        score_list = []
-        for idx, grasp_array in enumerate(grasp_poses):
-            pos_orn = pack_pose(grasp_array)
-            # pos_orn_list.append(pos_orn)
-            joint_cfg = list(p.calculateInverseKinematics(self.env._panda.pandaUid,
-                                                     self.env._panda.pandaEndEffectorIndex,
-                                                     pos_orn[:3],
-                                                     ros_quat(pos_orn[3:]),
-                                                     maxNumIterations=500,
-                                                     residualThreshold=1e-8))
-
-            grasp_joint_list.append(joint_cfg)
-            score_list.append(grasp_scores[idx])
-            new_joint_cfg = copy.deepcopy(joint_cfg)
-            new_joint_cfg[5] += np.pi if new_joint_cfg[5] < 0 else -np.pi
-            grasp_joint_list.append(new_joint_cfg)
-            score_list.append(grasp_scores[idx])
-
-        grasp_joint_list = np.array(grasp_joint_list)
-        self.robot = pb_ompl.PbOMPLRobot(self.env._panda.pandaUid, self.joint_idx, self.init_joint_pose)
-        # self.obstacles = [self.env.plane_id, self.sim_furniture_id, self.sim_target_id]
-        self.obstacles = [self.env.plane_id, self.sim_furniture_id]
-        self.setup_collision_detection(self.obstacles)
-        self.pb_ompl_interface = pb_ompl.PbOMPL(self.robot, self.obstacles)
-
-        valid_joint_list = []
-        valid_elbow_list = []
-        valid_score_list = []
-        for idx, grasp_joint in enumerate(grasp_joint_list):
-            if self.pb_ompl_interface.is_state_valid(grasp_joint):
-                valid_joint_list.append(grasp_joint)
-                elbow_pos, _ = p.getLinkState(self.env._panda.pandaUid, 5)[4:6]
-                valid_elbow_list.append(elbow_pos)
-                valid_score_list.append(score_list[idx])
-            time.sleep(0.005)
-
-        return valid_joint_list, valid_elbow_list, valid_score_list
+            mid_joint_list = np.array(mid_joint_list)
+            self.robot = pb_ompl.PbOMPLRobot(self.env._panda.pandaUid, self.joint_idx, self.init_joint_pose)
+            valid_list = []
+            self.obstacles = [self.env.plane_id, self.sim_furniture_id]
+            self.setup_collision_detection(self.obstacles)
+            self.pb_ompl_interface = pb_ompl.PbOMPL(self.robot, self.obstacles)
+            # mid_joint_list contain all joint config and valid_list indicate the config is valid or not, 
+            # 1 for valid, 0 for invalid
+            for idx, mid_joint in enumerate(mid_joint_list):
+                if self.pb_ompl_interface.is_state_valid(mid_joint):
+                    valid_list.append(1)
+                else:
+                    valid_list.append(0)
+            valid_list = np.array(valid_list)
+            print(f"mid_joint_list: {mid_joint_list}")
+            print(f"valid_list: {valid_list}")
+            return mid_joint_list, valid_list
     
     def check_inverse_kinematic(self, pose_orn):
         # This function check wheather the end-effector's pose is close enough to the one
@@ -872,7 +768,7 @@ class ActorWrapper(object):
                 )
         else:
             p.removeConstraint(self.fixed_joint_constraint)
-            self.env.place_back_objects()
+            # self.env.place_back_objects()
 
     def move2grasp(self, joint_path):
 
@@ -898,7 +794,7 @@ class ActorWrapper(object):
                                         velocityGains=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
 
             if idx % 6 == 0:
-                middle_pc_list.append(self.get_pc_state(frame="camera"))
+                middle_pc_list.append(self.get_pc_state(frame="camera", target_only=True))
                 ef_pose = self.env._get_ef_pose('mat')
                 camera2base_list.append(np.dot(ef_pose, np.linalg.inv(self.env.cam_offset)))
             for _ in range(200):

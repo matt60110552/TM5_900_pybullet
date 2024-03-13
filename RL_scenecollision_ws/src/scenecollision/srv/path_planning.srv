@@ -1,3 +1,4 @@
 scenecollision/motion_planning env_data
 ---
 std_msgs/Float32MultiArray joint_config
+std_msgs/Float32MultiArray grasp_poses
