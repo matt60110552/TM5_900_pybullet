@@ -632,7 +632,7 @@ class SimulatedYCBEnv():
             xpos = 0.6 + random.uniform(-0.04, 0.05)
             ypos = random.uniform(-0.25, 0.25)
         elif self.furniture_name == "carton_box":
-            xpos = 0.55 + random.uniform(-0.04, 0.05)
+            xpos = 0.55 + random.uniform(-0.045, 0.03)
             ypos = random.uniform(-0.22, 0.22)
 
 

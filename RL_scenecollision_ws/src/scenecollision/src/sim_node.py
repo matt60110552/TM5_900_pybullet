@@ -20,9 +20,9 @@ import copy
 class ros_node(object):
     def __init__(self, renders):
         self.actor = ActorWrapper(renders=renders)
-        self.simulation_server = rospy.Service("simulation_data", path_planning, self.create_scene)
+        self.simulation_server = rospy.Service("simulation_data", path_planning, self.create_path)
 
-    def create_scene(self, request):
+    def create_path(self, request):
         self.obs_pc_world = np.array(list(point_cloud2.read_points(request.env_data.obstacle_pointcloud,
                                                                      field_names=("x", "y", "z"),
                                                                      skip_nans=True)))
@@ -55,7 +55,7 @@ class ros_node(object):
                 dims.append(i.size)
 
             self.grasp_poses = np.array(request.env_data.grasp_poses.data, dtype=np.float32).reshape(dims)
-            self.grasp_poses = self.grasp2pre_grasp(self.grasp_poses, drawback_dis=0.04) # Drawback a little
+            self.grasp_poses = self.grasp2pre_grasp(self.grasp_poses, drawback_dis=0.05) # Drawback a little
             self.grasp_scores = np.array(request.env_data.scores).reshape(len(self.grasp_poses))
 
 
@@ -75,10 +75,8 @@ class ros_node(object):
             gripper_pos_list = np.array(gripper_pos_list)
             gripper_orn_list = np.array(gripper_orn_list)
 
-            gripper_dir_list = np.array(self.actor.qua2vector(gripper_orn_list))
-            gripper_change_list = np.array(self.gripper_change(gripper_pos_list[:, -5:],
-                                                            gripper_dir_list[:, -5:]))
-            print(f"gripper_change_list: {gripper_change_list}")
+
+            # elbow's linear middle way points planning
 
 
 
@@ -102,8 +100,10 @@ class ros_node(object):
 
             if path_list.all() == None:
                 print(f"no path")
+                print(f"grasp_pose_list: {grasp_pose_list}")
                 tmp_list = (10.*np.ones((1, 30, 6))).flatten().tolist() 
                 path_response.joint_config.data = tmp_list
+                grasp_pose_list = (10.*np.ones((1, 4, 4)))
             else:
                 # The shape of path is (30, 6)
                 
@@ -117,8 +117,23 @@ class ros_node(object):
 
                 sorted_indices = np.argsort(max_curvation_list)
                 path_list = np.array(path_list)[sorted_indices]
-                
-                
+
+                # wheather the gripper is moving toward its facing direction
+                gripper_mat_list = np.array(self.actor.pos_orn2matrix(gripper_pos_list, gripper_orn_list))
+                change_sum_list = []
+                for gripper_mat_path in gripper_mat_list:
+                    goal_position =  gripper_mat_path[-1][:3, 3]
+                    goal_vector =  -gripper_mat_path[-1][:3, 2]
+                    tmp_sum = 0
+                    print(f"along_z_axis: ")
+                    for idx in range(-10, -2, 1):
+                        along_z_axis = np.dot(goal_vector, (gripper_mat_path[idx][:3, 3] - goal_position))
+                        print(f"{along_z_axis}", end=" ")
+                        tmp_sum += along_z_axis
+                    print(f"\ntmp_sum: {tmp_sum}\n")
+                    change_sum_list.append(tmp_sum)
+                print(f"change_sum_list: {change_sum_list}")
+
                 path_flatten = path_list.flatten()
                 path_response.joint_config.data = path_flatten.tolist()
 
@@ -162,7 +177,6 @@ class ros_node(object):
                 dims.append(i.size)
             middle_waypoint_list = np.array(request.env_data.grasp_poses.data, dtype=np.float32).reshape(dims)
             mid_waypoint_list, valid_list = self.actor.create_simulation_env(grasp_poses=middle_waypoint_list)
-
             mid_path_response = path_planningResponse()
             for _ in range(2):
                 mid_path_response.joint_config.layout.dim.append(std_msgs.msg.MultiArrayDimension())
@@ -178,8 +192,8 @@ class ros_node(object):
             mid_path_response.joint_config.data = mid_waypoint_flatten.tolist()
 
 
-            for _ in range(1):
-                mid_path_response.grasp_poses.layout.dim.append(std_msgs.msg.MultiArrayDimension())
+            
+            mid_path_response.grasp_poses.layout.dim.append(std_msgs.msg.MultiArrayDimension())
             mid_path_response.grasp_poses.layout.dim[0].label = "grasp_num"
             mid_path_response.grasp_poses.layout.dim[0].size = waypoint_num
             mid_path_response.grasp_poses.layout.dim[0].stride = waypoint_num
@@ -235,7 +249,10 @@ class ros_node(object):
             # Calculate the curvature at the point
             if length_v1 != 0 and length_v2 != 0:
                 curvature = 2 * np.linalg.norm(cross_product) / (length_v1 * length_v2 * (length_v1 + length_v2))
-                curvatures[i] = curvature
+                if i > 20:
+                    curvatures[i] = curvature
+                else:
+                    curvatures[i] = curvature * 0.5
 
         # Make a decision based on the maximum curvature
         max_curvature = np.max(curvatures)
