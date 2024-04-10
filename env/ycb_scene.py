@@ -168,8 +168,22 @@ class SimulatedYCBEnv():
             self.furniture_id = p.loadURDF(furniture_file, [self.furniture_pos[0], self.furniture_pos[1], self.furniture_pos[2]],
                                            [0.707, 0., 0., 0.707], useFixedBase=True)
             self.furniture_z = 0.45
-        elif self.furniture_name == "cabinet":
-            furniture_file = os.path.join(self.root_dir,  'data/objects/cabinet/model.urdf')
+        elif self.furniture_name == "shelf":
+            furniture_file = os.path.join(self.root_dir,  'data/objects/shelf/model.urdf')
+            self.furniture_pos = np.array([0.6, 0.0, 0.01])
+            self.furniture_id = p.loadURDF(furniture_file, [self.furniture_pos[0], self.furniture_pos[1], self.furniture_pos[2]],
+                                           [0., 0., 0., 1.], useFixedBase=True)
+            self.furniture_z = 0.52
+        elif self.furniture_name == "shelf_2":
+            furniture_file = os.path.join(self.root_dir,  'data/objects/shelf_2/model.urdf')
+            self.furniture_pos = np.array([0.85, 0.0, 0.01])
+            self.furniture_id = p.loadURDF(furniture_file, [self.furniture_pos[0], self.furniture_pos[1], self.furniture_pos[2]],
+                                           [0., 0., 0., 1.], useFixedBase=True)
+            # shelf_2 has three plate, 2 different furniture_z
+            # self.furniture_z = 0.33
+            self.furniture_z = 0.73
+        elif self.furniture_name == "shelf_3":
+            furniture_file = os.path.join(self.root_dir,  'data/objects/shelf_3/model.urdf')
             self.furniture_pos = np.array([0.6, 0.0, 0.01])
             self.furniture_id = p.loadURDF(furniture_file, [self.furniture_pos[0], self.furniture_pos[1], self.furniture_pos[2]],
                                            [0., 0., 0., 1.], useFixedBase=True)
@@ -197,7 +211,7 @@ class SimulatedYCBEnv():
 
         if furniture == "table":
             self._randomly_place_objects_pack(self._get_random_object(num_object), scale=1, if_stack=if_stack)
-        elif furniture == "cabinet":
+        elif furniture == "shelf":
             self._randomly_place_objects_pack(self._get_random_object(1), scale=1, if_stack=if_stack)
         elif furniture == "carton_box":
             self._randomly_place_objects_pack(self._get_random_object(1), scale=1, if_stack=if_stack)
@@ -628,9 +642,22 @@ class SimulatedYCBEnv():
             # X part is not symmetry due to the issue that object is hard to approaching if too close
             xpos = 0.83 + 0.3 * (random.random() - 0.5)
             ypos = 0.4 * (random.random() - 0.5)
-        elif self.furniture_name == "cabinet":
-            xpos = 0.6 + random.uniform(-0.04, 0.05)
+        elif self.furniture_name == "shelf":
+            xpos = 0.6 + random.uniform(-0.04, 0.06)
             ypos = random.uniform(-0.25, 0.25)
+        elif self.furniture_name == "shelf_2":
+            xpos = 0.6 + random.uniform(0.0, 0.02)
+            ypos = random.uniform(-0.32, 0.32)
+        elif self.furniture_name == "shelf_3":
+            xpos = 0.6 + random.uniform(-0.04, 0.06)
+            random_num = random.random()
+            # Determine which range to use based on the random number
+            if random_num < 0.5:
+                # Randomize within the first range [0, 0.1]
+                ypos = random.uniform(-0.25, -0.05)
+            else:
+                # Randomize within the second range [0.3, 0.5]
+                ypos = random.uniform(0.05, 0.25)
         elif self.furniture_name == "carton_box":
             xpos = 0.55 + random.uniform(-0.045, 0.03)
             ypos = random.uniform(-0.22, 0.22)
@@ -650,7 +677,7 @@ class SimulatedYCBEnv():
         else:
             height_weight = self.object_heights[self.target_idx]
             # z_init = .4 + 1.95 * height_weight # original setting by h-chen
-            z_init = self.furniture_z  # 0.45 for table and 0.65 for cabinet, change the number in "reset" function to reset the init_z of the object
+            z_init = self.furniture_z  # 0.45 for table and 0.65 for shelf, change the number in "reset" function to reset the init_z of the object
         orn = p.getQuaternionFromEuler([x_rot, 0, np.random.uniform(-np.pi, np.pi)])
         p.resetBasePositionAndOrientation(self._objectUids[self.target_idx],
                                           [xpos, ypos,  z_init], [orn[0], orn[1], orn[2], orn[3]])
