@@ -168,32 +168,71 @@ class SimulatedYCBEnv():
             self.furniture_id = p.loadURDF(furniture_file, [self.furniture_pos[0], self.furniture_pos[1], self.furniture_pos[2]],
                                            [0.707, 0., 0., 0.707], useFixedBase=True)
             self.furniture_z = 0.45
+            self.xpos = 0.83 + 0.3 * (random.random() - 0.5)
+            self.ypos = 0.4 * (random.random() - 0.5)
         elif self.furniture_name == "shelf":
             furniture_file = os.path.join(self.root_dir,  'data/objects/shelf/model.urdf')
             self.furniture_pos = np.array([0.6, 0.0, 0.01])
             self.furniture_id = p.loadURDF(furniture_file, [self.furniture_pos[0], self.furniture_pos[1], self.furniture_pos[2]],
                                            [0., 0., 0., 1.], useFixedBase=True)
             self.furniture_z = 0.52
+            self.xpos = 0.6
+            self.ypos = 0.
         elif self.furniture_name == "shelf_2":
             furniture_file = os.path.join(self.root_dir,  'data/objects/shelf_2/model.urdf')
             self.furniture_pos = np.array([0.85, 0.0, 0.01])
             self.furniture_id = p.loadURDF(furniture_file, [self.furniture_pos[0], self.furniture_pos[1], self.furniture_pos[2]],
                                            [0., 0., 0., 1.], useFixedBase=True)
             # shelf_2 has three plate, 2 different furniture_z
-            # self.furniture_z = 0.33
-            self.furniture_z = 0.73
+            # self.furniture_z = 0.73
+            self.furniture_z = 0.33
+            self.xpos = 0.6
+            self.ypos = 0.
         elif self.furniture_name == "shelf_3":
             furniture_file = os.path.join(self.root_dir,  'data/objects/shelf_3/model.urdf')
             self.furniture_pos = np.array([0.6, 0.0, 0.01])
             self.furniture_id = p.loadURDF(furniture_file, [self.furniture_pos[0], self.furniture_pos[1], self.furniture_pos[2]],
                                            [0., 0., 0., 1.], useFixedBase=True)
             self.furniture_z = 0.52
+            self.xpos = 0.6
+            random_num = random.random()
+            # Determine which range to use based on the random number
+            if random_num < 0.5:
+                # Randomize within the first range [0, 0.1]
+                self.ypos = -0.1
+            else:
+                # Randomize within the second range [0.3, 0.5]
+                self.ypos = 0.1
+        elif self.furniture_name == "shelf_4":
+            furniture_file = os.path.join(self.root_dir,  'data/objects/shelf_4/model.urdf')
+            self.furniture_pos = np.array([0.65, 0.0, 0.01])
+            orn_1 = p.getQuaternionFromEuler([0, 0, np.pi/3])
+            orn_2 = p.getQuaternionFromEuler([0, 0, np.pi/3])
+            orn = random.choice([orn_1, orn_2])
+            self.furniture_id = p.loadURDF(furniture_file,
+                                           [self.furniture_pos[0],
+                                            self.furniture_pos[1],
+                                            self.furniture_pos[2]],
+                                           [orn[0], orn[1], orn[2], orn[3]], useFixedBase=True)
+            self.furniture_z = 0.38
+            self.xpos = 0.65
+            self.ypos = 0.
+        elif self.furniture_name == "shelf_5":
+            furniture_file = os.path.join(self.root_dir,  'data/objects/shelf_5/model.urdf')
+            self.furniture_pos = np.array([0.65, 0.0, 0.01])
+            self.furniture_id = p.loadURDF(furniture_file, [self.furniture_pos[0], self.furniture_pos[1], self.furniture_pos[2]],
+                                           [0., 0., 0., 1.], useFixedBase=True)
+            self.furniture_z = 0.33
+            self.xpos = 0.6
+            self.ypos = 0.
         elif self.furniture_name == "carton_box":
             furniture_file = os.path.join(self.root_dir,  'data/objects/carton_box/model.urdf')
             self.furniture_pos = np.array([0.55, 0.0, 0.06])
             self.furniture_id = p.loadURDF(furniture_file, [self.furniture_pos[0], self.furniture_pos[1], self.furniture_pos[2]],
                                            [0., 0., 0., 1.], useFixedBase=True)
             self.furniture_z = 0.33
+            self.xpos = 0.55 + random.uniform(-0.045, 0.03)
+            self.ypos = random.uniform(-0.22, 0.22)
 
         self.obj_path = [plane_file, furniture_file]
 
@@ -310,6 +349,23 @@ class SimulatedYCBEnv():
             point_state = backproject_camera_target(obs[3].T, self.intrinsic_matrix, inv_mask)  # obs[4].T
             point_state[1] *= -1
             obs = (point_state, obs)
+        elif raw_data == "multiple_objects":
+            mask[mask >= 0] += 1  # transform mask to have target id 0
+            # target_idx = self.target_idx + 4 # floor:0->1, furniture:1->2, arm:2->3, so the target_idhas to plus1 and plus 3
+            for idx, placed_idx in enumerate(self.placed_objects):
+                if placed_idx:
+                    target_idx = idx + 4
+                    mask[mask == target_idx] = 0
+            mask[mask == -1] = 50
+            depth[mask == 1] = 0 # filter out the floor's pointcloud by making its depth to 0
+            depth[mask == 3] = 0 # filter out the arm's pointcloud by making its depth to 0
+            mask[mask != 0] = 1 # Turn everything other than target into 1, represent obstacle
+            obs = np.concatenate([rgba[..., :3], depth[..., None], mask[..., None]], axis=-1)
+            obs = self.process_image(obs[..., :3], obs[..., [3]], obs[..., [4]], tuple(self._resize_img_size))
+            point_state = backproject_camera_target(obs[3].T, self.intrinsic_matrix, obs[4].T)  # obs[4].T
+            point_state[1] *= -1
+            point_state = self.process_pointcloud(point_state, vis)
+            obs = (point_state, obs)
         else:
             mask[mask >= 0] += 1  # transform mask to have target id 0
             target_idx = self.target_idx + 4 # floor:0->1, furniture:1->2, arm:2->3, so the target_idhas to plus1 and plus 3
@@ -317,7 +373,7 @@ class SimulatedYCBEnv():
             mask[mask == -1] = 50
             depth[mask == 1] = 0 # filter out the floor's pointcloud by making its depth to 0
             depth[mask == 3] = 0 # filter out the arm's pointcloud by making its depth to 0
-            mask[mask != 0] = 1 # Turn everthing other than target into 1, represent obstacle
+            mask[mask != 0] = 1 # Turn everything other than target into 1, represent obstacle
             obs = np.concatenate([rgba[..., :3], depth[..., None], mask[..., None]], axis=-1)
             obs = self.process_image(obs[..., :3], obs[..., [3]], obs[..., [4]], tuple(self._resize_img_size))
             point_state = backproject_camera_target(obs[3].T, self.intrinsic_matrix, obs[4].T)  # obs[4].T
@@ -537,18 +593,19 @@ class SimulatedYCBEnv():
                 self.place_back_objects()
                 for i in range(len(urdfList)):
                     if i == 0:
-                        xpos = 0.8
-                        ypos = 0
+                        xpos = self.xpos
+                        ypos = self.ypos
                     else:
                         spare = False
                         while not spare:
                             spare = True
-                            xpos = 0.8 + 0.28 * (random.random() - 0.5)
-                            ypos = 0.28 * (random.random() - 0.5)
+                            xpos = self.xpos + 0.06 * (random.random() - 0.5)
+                            ypos = self.ypos + 0.08 * (random.random() - 0.5)
                             for idx in range(len(self.placed_objects)):
                                 if self.placed_objects[idx]:
                                     pos, _ = p.getBasePositionAndOrientation(self._objectUids[idx])
-                                    if (xpos-pos[0])**2+(ypos-pos[1])**2 < 0.0165:
+
+                                    if (xpos-pos[0])**2+(ypos-pos[1])**2 < 0.0002:
                                         spare = False
                     obj_path = '/'.join(urdfList[i].split('/')[:-1]) + '/'
                     self.target_idx = self.obj_path.index(os.path.join(self.root_dir, obj_path))
@@ -560,8 +617,10 @@ class SimulatedYCBEnv():
                         height_weight = (object_bbox[1][2] - object_bbox[0][2]) / 2
                         z_init = .3 + 2.5 * height_weight
                     else:
-                        height_weight = self.object_heights[self.target_idx]
-                        z_init = .35 + 1.95 * height_weight
+                        # height_weight = self.object_heights[self.target_idx]
+                        object_bbox = p.getAABB(self._objectUids[self.target_idx])
+                        height_weight = (object_bbox[1][2] - object_bbox[0][2]) / 2
+                        z_init = self.furniture_z + 1.95 * height_weight
                     orn = p.getQuaternionFromEuler([x_rot, 0, np.random.uniform(-np.pi, np.pi)])
                     p.resetBasePositionAndOrientation(self._objectUids[self.target_idx],
                                                       [xpos, ypos,  z_init],
@@ -635,32 +694,6 @@ class SimulatedYCBEnv():
         """
         Randomize positions of each object urdf.
         """
-        # if self.furniture_name == "table":
-            # xpos = 0.8 + 0.3 * (self._blockRandom * random.random() - 0.5)
-            # ypos = 0.3 * (self._blockRandom * random.random() - 0.5)
-        if self.furniture_name == "table":
-            # X part is not symmetry due to the issue that object is hard to approaching if too close
-            xpos = 0.83 + 0.3 * (random.random() - 0.5)
-            ypos = 0.4 * (random.random() - 0.5)
-        elif self.furniture_name == "shelf":
-            xpos = 0.6 + random.uniform(-0.04, 0.06)
-            ypos = random.uniform(-0.25, 0.25)
-        elif self.furniture_name == "shelf_2":
-            xpos = 0.6 + random.uniform(0.0, 0.02)
-            ypos = random.uniform(-0.32, 0.32)
-        elif self.furniture_name == "shelf_3":
-            xpos = 0.6 + random.uniform(-0.04, 0.06)
-            random_num = random.random()
-            # Determine which range to use based on the random number
-            if random_num < 0.5:
-                # Randomize within the first range [0, 0.1]
-                ypos = random.uniform(-0.25, -0.05)
-            else:
-                # Randomize within the second range [0.3, 0.5]
-                ypos = random.uniform(0.05, 0.25)
-        elif self.furniture_name == "carton_box":
-            xpos = 0.55 + random.uniform(-0.045, 0.03)
-            ypos = random.uniform(-0.22, 0.22)
 
 
         obj_path = '/'.join(urdfList[0].split('/')[:-1]) + '/'
@@ -680,7 +713,7 @@ class SimulatedYCBEnv():
             z_init = self.furniture_z  # 0.45 for table and 0.65 for shelf, change the number in "reset" function to reset the init_z of the object
         orn = p.getQuaternionFromEuler([x_rot, 0, np.random.uniform(-np.pi, np.pi)])
         p.resetBasePositionAndOrientation(self._objectUids[self.target_idx],
-                                          [xpos, ypos,  z_init], [orn[0], orn[1], orn[2], orn[3]])
+                                          [self.xpos, self.ypos,  z_init], [orn[0], orn[1], orn[2], orn[3]])
         p.resetBaseVelocity(
             self._objectUids[self.target_idx], (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
         )
@@ -837,6 +870,100 @@ class SimulatedYCBEnv():
         obj_pose = list(pos) + [orn[3], orn[0], orn[1], orn[2]]
         return inv_relative_pose(obj_pose, pose)
 
+    def _shelf_place_objects(self, urdfList, scale=1, if_stack=True, poses=None):
+        '''
+        Input:
+            urdfList: File path of mesh urdf, support single and multiple object list
+            scale: mesh scale
+            if_stack (bool): scene setup with uniform position or stack with collision
+
+        Func:
+            For object in urdfList do:
+                (1) find Uid of pybullet body by indexing object
+                (1) reset position of pybullet body in urdfList
+                (2) set self.placed_objects[idx] = True
+        '''
+        
+        self.place_back_objects()
+        possible_place = self.get_random_pos_shelf()
+        for i in range(len(urdfList)):
+            
+            (xpos, ypos) = random.choice(possible_place)
+            possible_place.remove([xpos, ypos])
+            obj_path = '/'.join(urdfList[i].split('/')[:-1]) + '/'
+            self.target_idx = self.obj_path.index(os.path.join(self.root_dir, obj_path))
+            self.placed_objects[self.target_idx] = True
+            self.target_name = urdfList[i].split('/')[-2]
+            x_rot = 0
+            
+
+            # height_weight = self.object_heights[self.target_idx]
+            object_bbox = p.getAABB(self._objectUids[self.target_idx])
+            height_weight = (object_bbox[1][2] - object_bbox[0][2]) / 2
+            z_init = self.furniture_z + 1.95 * height_weight
+            orn = p.getQuaternionFromEuler([x_rot, 0, np.random.uniform(-np.pi, np.pi)])
+            p.resetBasePositionAndOrientation(self._objectUids[self.target_idx],
+                                                [xpos, ypos, z_init],
+                                                [orn[0], orn[1], orn[2], orn[3]])
+            p.resetBaseVelocity(
+                self._objectUids[self.target_idx], (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
+            )
+            for _ in range(400):
+                p.stepSimulation()
+            print('>>>> target name: {}'.format(self.target_name))
+            pos, new_orn = p.getBasePositionAndOrientation(self._objectUids[self.target_idx])  # to target
+            ang = np.arccos(2 * np.power(np.dot(tf_quat(orn), tf_quat(new_orn)), 2) - 1) * 180.0 / np.pi
+
+            if (self.target_name in self._filter_objects or ang > 50) and not self._use_acronym:  # self.target_name.startswith('0') and
+                self.target_name = 'noexists'
+                self.stack_success = False
+
+        for _ in range(2000):
+            p.stepSimulation()
+
+
+    def get_random_pos_shelf(self):
+        if self.furniture_name == "shelf_2":
+            xy_pos = self.generate_positions(x_range=[0.02, -0.02],
+                                             y_range=[0.45, -0.45],
+                                             x_parts=3,
+                                             y_parts=5)
+            
+        elif self.furniture_name == "shelf_3":
+            xy_pos = self.generate_positions(x_range=[0.06, -0.06],
+                                             y_range=[0.3, -0.3],
+                                             x_parts=3,
+                                             y_parts=5)
+        elif self.furniture_name == "shelf_4":
+            xy_pos = self.generate_positions(x_range=[0.15, -0.15],
+                                             y_range=[0.15, -0.15],
+                                             x_parts=3,
+                                             y_parts=3)
+        elif self.furniture_name == "shelf_5":
+            xy_pos = self.generate_positions(x_range=[0.25, 0.17],
+                                             y_range=[0.25, -0.25],
+                                             x_parts=3,
+                                             y_parts=5)
+        return xy_pos
+
+    def generate_positions(self, x_range, y_range, x_parts, y_parts):
+        positions = []
+
+        # Calculate the step size for each part
+        x_step = (x_range[1] - x_range[0]) / x_parts
+        y_step = (y_range[1] - y_range[0]) / y_parts
+
+        # Generate positions for each part
+        for i in range(x_parts):
+            for j in range(y_parts):
+                x_start = x_range[0] + i * x_step
+                y_start = y_range[0] + j * y_step
+                x_end = x_range[0] + (i + 1) * x_step
+                y_end = y_range[0] + (j + 1) * y_step
+                position = [(x_start + x_end) / 2 + self.xpos, (y_start + y_end) / 2+ self.ypos]
+                if position != [0., 0.]:
+                    positions.append(position)
+        return positions
 
 if __name__ == '__main__':
     pass

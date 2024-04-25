@@ -31,30 +31,19 @@ class ros_node(object):
                                                                      skip_nans=True)))
         self.actor.env.reset(save=False, enforce_face_target=False, init_joints=self.actor.init_joint_pose, reset_free=True)
         
-
-
-        # tar_pcd = o3d.geometry.PointCloud()
-        # tar_pcd.points = o3d.utility.Vector3dVector(np.array(self.tar_pc_world[:, :3]))
-
-        # obs_pcd = o3d.geometry.PointCloud()
-        # obs_pcd.points = o3d.utility.Vector3dVector(np.array(self.obs_pc_world[:, :3]))
-
-        # # Create coordinate axes
-        # axes = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1)
-
-        # # Visualize the point cloud with axes
-        # o3d.visualization.draw_geometries([tar_pcd, obs_pcd, axes])
-
+        self.scene_pc_world = np.concatenate([self.obs_pc_world[:, :3], self.tar_pc_world[:, :3]], axis=0)
+        
         
         dims = []
         for i in request.env_data.grasp_poses.layout.dim:
             dims.append(i.size)
 
         self.grasp_poses = np.array(request.env_data.grasp_poses.data, dtype=np.float32).reshape(dims)
-        self.grasp_poses = self.grasp2pre_grasp(self.grasp_poses, drawback_dis=0.065) # Drawback a little
+        self.grasp_poses = self.grasp2pre_grasp(self.grasp_poses, drawback_dis=0.07) # Drawback a little
         self.grasp_scores = np.array(request.env_data.scores).reshape(len(self.grasp_poses))
         self.start_joint = np.array(request.env_data.start_joint)
-
+        
+        print(f"sim start joint: {self.start_joint}")
 
 
         start_time = time.time()
@@ -63,7 +52,6 @@ class ros_node(object):
             self.actor.sim_furniture_id = None
         # This function is only for sim_actor_id, the real_actor_id won't enter here
         self.actor.env.place_back_objects()
-        # p.resetBasePositionAndOrientation(self.actor.env.furniture_id, [0, 0, 4], [0, 0, 0, 1])
         self.actor.replace_real_furniture()
 
 
@@ -71,43 +59,48 @@ class ros_node(object):
         if self.actor.sim_furniture_id is None:
             starttime = time.time()
             # self.sim_furniture_id, self.sim_target_id = self.create_obstacle_from_pc(obs_pc, target_pc)
-            self.actor.sim_furniture_id = self.actor.create_obstacle_from_pc(self.obs_pc_world, self.tar_pc_world)
+            self.actor.sim_furniture_id = self.actor.create_obstacle_from_pc(self.obs_pc_world,
+                                                                             self.tar_pc_world)
             print(f"simulate duration: {time.time()-starttime}!!!!!!!!!!!!!!!!!")
         # Be careful, the list of score will increase due to the rotate of the 6th joint
         (grasp_joint_list, grasp_poses_list,
-        elbow_pos_list, grasp_score_list) = self.actor.grasp_pose2grasp_joint(grasp_poses=self.grasp_poses,
-                                                                                grasp_scores=self.grasp_scores)
+         elbow_pos_list, grasp_score_list) = self.actor.grasp_pose2grasp_joint(grasp_poses=self.grasp_poses,
+                                                                               grasp_scores=self.grasp_scores)
         grasp_joint_list = np.array(grasp_joint_list)
         elbow_pos_list = np.array(elbow_pos_list)
         grasp_poses_list = np.array(grasp_poses_list)
 
-
+        motion_planning_start_time = time.time()
         if len(elbow_pos_list) == 0:
             None_path_list = [[[None] * 6 for _ in range(40)]]
             print(f"None_path_list: {np.array(None_path_list).shape}")
             path_list = grasp_poses_list = elbow_path_list = gripper_pos_list = gripper_orn_list = None_path_list
         elif len(elbow_pos_list) == 1:
             (path_list,
-            elbow_path_list,
-            gripper_pos_list,
-            gripper_orn_list) = self.actor.motion_planning(grasp_joint_cfg=grasp_joint_list,
-                                                           start_joint=self.start_joint,
-                                                           elbow_pos_list=elbow_pos_list)
+             elbow_path_list,
+             gripper_pos_list,
+             gripper_orn_list) = self.actor.motion_planning(grasp_joint_cfg=grasp_joint_list,
+                                                            start_joint=self.start_joint,
+                                                            elbow_pos_list=elbow_pos_list,
+                                                            grasp_poses_list=grasp_poses_list)
+            print(f"motion_planning_time:{time.time() - motion_planning_start_time}")
         else:
             (highest_joint_cfg_list,
-                highest_elbow_pos_list,
-                highest_grasp_poses_list) = self.actor.dbscan_grouping(elbow_pos_list,
-                                                                grasp_joint_list,
-                                                                grasp_score_list,
-                                                                grasp_poses_list)
+             highest_elbow_pos_list,
+             highest_grasp_poses_list) = self.actor.dbscan_grouping(elbow_pos_list,
+                                                                    grasp_joint_list,
+                                                                    grasp_score_list,
+                                                                    grasp_poses_list,
+                                                                    self.scene_pc_world)
             grasp_poses_list = highest_grasp_poses_list
             (path_list, 
-            elbow_path_list, 
-            gripper_pos_list, 
-            gripper_orn_list) = self.actor.motion_planning(grasp_joint_cfg=highest_joint_cfg_list,
-                                                           start_joint=self.start_joint,
-                                                           elbow_pos_list=highest_elbow_pos_list)
-
+             elbow_path_list, 
+             gripper_pos_list, 
+             gripper_orn_list) = self.actor.motion_planning(grasp_joint_cfg=highest_joint_cfg_list,
+                                                            start_joint=self.start_joint,
+                                                            elbow_pos_list=highest_elbow_pos_list,
+                                                            grasp_poses_list=grasp_poses_list)
+            print(f"motion_planning_time:{time.time() - motion_planning_start_time}")
 
 
         path_list = np.array(path_list)
@@ -149,12 +142,15 @@ class ros_node(object):
             
             # Get the smoothness of the path
             gripper_mat_list = np.array(self.actor.pos_orn2matrix(gripper_pos_list, gripper_orn_list))
-            max_curvation_list = []
+            score_list = []
+
             for gripper_mat_path in  gripper_mat_list:
-                max_curvation_list.append(self.curvature_decision(gripper_mat_path))
-            for maxcur in max_curvation_list:
-                print(f"maxcur: {maxcur}")
-            sorted_indices = np.argsort(max_curvation_list)
+                score_list.append(self.path_quality_decision(gripper_mat_path))
+            sorted_indices = np.argsort(score_list)
+            score_list.sort()
+            score_list.sort(reverse=True)
+            print(f"score_list: {score_list}")
+
             path_list = np.array(path_list)[sorted_indices]
 
 
@@ -218,15 +214,15 @@ class ros_node(object):
             gripper_change_list.append(tmp_sum/len(positions_list))
         return gripper_change_list
 
-    def curvature_decision(self, path_points):
+    def curvature_decision(self, waypoint_mat):
         # Calculate the curvature at each point along the path
-        num_points = len(path_points)
+        num_points = len(waypoint_mat)
         curvatures = np.zeros(num_points)
 
-        for i in range(10, num_points - 1):
+        for i in range(num_points - 1):
             # Calculate vectors between neighboring points
-            v1 = path_points[i][:3, 3] - path_points[i-1][:3, 3]
-            v2 = path_points[i+1][:3, 3] - path_points[i][:3, 3]
+            v1 = waypoint_mat[i][:3, 3] - waypoint_mat[i-1][:3, 3]
+            v2 = waypoint_mat[i+1][:3, 3] - waypoint_mat[i][:3, 3]
 
             # Calculate cross product to find the perpendicular vector
             cross_product = np.cross(v1, v2)
@@ -244,18 +240,60 @@ class ros_node(object):
                 else:
                     curvatures[i] = curvature * 0.5
 
+        return curvatures
+
+    def path_quality_decision(self, waypoint_mat):
+        curvatures = self.curvature_decision(waypoint_mat)
+
+        # Wheather gripper is approaching along the grasp direction
+        goal_mat = waypoint_mat[-1]
+        approach_list = []
+        moving_list = []
+        for idx in range(len(waypoint_mat[:-1])):
+            moving_vec = waypoint_mat[idx+1][:3, 3] - waypoint_mat[idx][:3, 3]
+            moving_vec = moving_vec / np.linalg.norm(moving_vec)
+            # moving_list.append(np.dot(moving_vec, goal_mat[:3, 2]))
+            # approach_list.append(np.dot(moving_vec, goal_mat[:3, 2]))
+
+            # matrix_diff = waypoint_mat[idx][:3, :3] - goal_mat[:3, :3]
+            matrix_diff = waypoint_mat[idx][:3, :2] - goal_mat[:3, :2]
+            approach_list.append(np.linalg.norm(matrix_diff, ord='fro') + np.dot(moving_vec, goal_mat[:3, 2]))
         # Make a decision based on the maximum curvature
+
+        smoothness_weight = lambda idx: 1 / (curvatures[idx] + 1)  # Smaller smoothness scores get higher weight
+        direction_weight = lambda idx: approach_list[idx]  # Larger direction scores get higher weight
+        # Calculate weighted scores for each list
+        weighted_smoothness = [score * smoothness_weight(idx) for idx, score in enumerate(curvatures)]
+        weighted_direction = [score * direction_weight(idx) for idx, score in enumerate(approach_list)]
+        # Combine the weighted scores using a weighted average
+        total_weighted_scores = [(w_smooth + w_dir) / 2 for w_smooth, w_dir in zip(weighted_smoothness, weighted_direction)]
+        final_score = sum(total_weighted_scores)
+
         max_curvature = np.max(curvatures)
-        return max_curvature
+        # print(f"max_cur: {max_curvature}\n")
+        # print(f"curvatures: {curvatures}\n\napproach_list: {approach_list}\n\ntotal_weighted_scores: {total_weighted_scores}\n")
+        # print(f"moving_list: {moving_list}\n")
+        # print(f"final_score: {final_score}")
+        # print(f"============================")
+        # return max_curvature
+        return final_score
+
+    # Function to evaluate grip pose consistency
+    def evaluate_grip_pose(self, grip_pose, target_pose):
+        # Calculate angle between grip pose orientation and target orientation
+        grip_orientation = grip_pose[:3, :3]
+        target_orientation = target_pose[:3, :3]
+        angle = np.arccos(np.clip(np.dot(grip_orientation.flatten(), target_orientation.flatten()), -1.0, 1.0))
+        return angle  # Return angle as a measure of consistency (smaller is better)
+
+    # Function to calculate dot product between grip position movement and target orientation Z-axis
+    def calculate_dot_product(self, grip_pos, prev_grip_pos, target_orientation):
+        grip_movement_vector = grip_pos - prev_grip_pos
+        target_z_axis = target_orientation[:3, 2]
+        dot_product = np.dot(grip_movement_vector, target_z_axis)
+        return dot_product  # Return dot product as a measure of vertical movement (larger is better)
 
 
-
-
-    def distance_in_joint(self, joint_path_list, new_joint_cfg):
-        for joint_path in joint_path_list:
-            dis = np.linalg.norm((new_joint_cfg - joint_path[-1]))
-            print(f"dis: {dis:.3f}")
-        print(f"")
 
 if __name__ == "__main__":
     rospy.init_node("sim")

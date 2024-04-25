@@ -25,12 +25,24 @@ class ros_node(object):
         self.actor = ActorWrapper(renders=renders)
         self.start_sub = rospy.Subscriber("start_real_cmd", Int32, self.get_env_callback)
         self.contact_client = rospy.ServiceProxy('contact_graspnet/get_grasp_result', GraspGroup)
+        self.simple_sub = rospy.Subscriber("simple_cmd", Int32, self.simple_callback)
 
         self.simulation_client = rospy.ServiceProxy("simulation_data", path_planning)
-
+        self.object_num = 3
     def get_env_callback(self, msg):
         for _ in range(msg.data):
-            self.actor.env.reset(save=False, enforce_face_target=False, init_joints=self.actor.init_joint_pose, reset_free=True)
+            # self.actor.env.reset(save=False, enforce_face_target=False,
+            #                      init_joints=self.actor.init_joint_pose,
+            #                      reset_free=True)
+            
+            self.actor.env._panda.reset(self.actor.init_joint_pose)
+            self.actor.env.place_back_objects()
+            # self.actor.env._randomly_place_objects_pack(self.actor.env._get_random_object(2), scale=1, if_stack=True)
+            self.actor.env._shelf_place_objects(self.actor.env._get_random_object(self.object_num),
+                                                scale=1,
+                                                if_stack=True)
+
+
             self.actor.freeze_release(option=True) # To make the target object be fixed
             self.actor.obstacle_points = None
             self.actor.target_points = None
@@ -46,7 +58,13 @@ class ros_node(object):
 
             # Get the pointcloud of target and obstacle in world frame
             noise_stddev = 0.015/np.sqrt(3)
-            obstacle_points_world, target_points_world, scene_points_world = self.actor.get_pc_state(frame="world", vis=False)
+            (obstacle_points_world,
+             target_points_world,
+             scene_points_world) = self.actor.get_pc_state(frame="world", vis=False, concat=False)
+            if target_points_world is None:
+                self.actor.freeze_release(option=False) # To make the target object be released
+                print(f"no target pointcloud")
+                continue
             obstacle_points_world = obstacle_points_world[:, :3]
             target_points_world = target_points_world[:, :3]
 
@@ -55,6 +73,14 @@ class ros_node(object):
             target_points_world = target_points_world + np.random.normal(scale=noise_stddev,
                                                                          size=target_points_world.shape)
 
+
+
+            # self.actor.env.move([0.02, 0.03, 0.02, 0.1, -0.1, 0])
+            # self.actor.env.move([0.02, 0.03, 0.02, 0.1, -0.1, 0])
+
+            for _ in range(6):
+                self.actor.env.move([-0.03, 0.03, 0.0, 0., 0.05, 0])
+            
             grasp_list = []
             score_list = []
             for i in range(4):
@@ -65,17 +91,16 @@ class ros_node(object):
                 obstacle_points = obstacle_points[:, :3]
                 target_points = target_points[:, :3]
 
-                target_points_mean = np.mean(target_points, axis=0)
-                print(f"target_points_mean: {target_points_mean}")
+
                 # noise_stddev = 0.015/np.sqrt(3)
-                obstacle_points = obstacle_points + np.random.normal(scale=noise_stddev, size=obstacle_points.shape)
-                target_points = target_points + np.random.normal(scale=noise_stddev, size=target_points.shape)
+                # obstacle_points = obstacle_points + np.random.normal(scale=noise_stddev, size=obstacle_points.shape)
+                # target_points = target_points + np.random.normal(scale=noise_stddev, size=target_points.shape)
                 vis_scene_points = np.concatenate((target_points, obstacle_points), axis=1)
 
                 grasp_poses_camera = self.setting_contact_req(color_image, depth_image, mask_image,
                                                               intrinsic_matrix, obstacle_points, target_points)
                 
-
+                print(f"length of grasp_poses_camera: {len(grasp_poses_camera)}")
                 ef_pose = self.actor.env._get_ef_pose('mat')
                 cam_offset_inv = np.linalg.inv(self.actor.env.cam_offset)
                 for grasp_pose_cam in grasp_poses_camera:
@@ -85,21 +110,11 @@ class ros_node(object):
                         grasp_list.append(grasp_world.flatten())
                         score_list.append(grasp_pose_cam.score)
 
-                if target_points_mean[0] < 0:
-                    self.actor.env.move([0.01, 0.03, 0.02, 0, 0, 0])
-                else:
-                    self.actor.env.move([-0.01, 0.03, 0.02, 0, 0, 0])
-            # # Get the pointcloud of target and obstacle in world frame
-            # obstacle_points, target_points, scene_points = self.actor.get_pc_state(frame="world", vis=False)
-            # obstacle_points = obstacle_points[:, :3]
-            # target_points = target_points[:, :3]
-
-            # obstacle_points = obstacle_points + np.random.normal(scale=noise_stddev, size=obstacle_points.shape)
-            # target_points = target_points + np.random.normal(scale=noise_stddev, size=target_points.shape)
             grasp_num = len(grasp_list)
             print(f"grasp_num: {grasp_num}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
             if grasp_num != 0:
-                self.visualize_points_grasppose(scene_points=scene_points_world, grasp_list=grasp_list)
+                # self.actor.visualize_points_grasppose(scene_points=scene_points_world, grasp_list=grasp_list)
+                # self.actor.visualize_points_grasppose(scene_points=obstacle_points_world, grasp_list=grasp_list)
                 
                 combined_data = list(zip(grasp_list, score_list))
                 # Sort based on the scores from score_list
@@ -113,6 +128,7 @@ class ros_node(object):
 
 
                 start_joint = self.actor.get_joint_degree()
+                # print(f"start_joint: {start_joint}")
                 custom_req = self.setup_path_planning_req(grasp_poses_data,
                                                           grasp_score_data,
                                                           start_joint,
@@ -125,12 +141,14 @@ class ros_node(object):
                 joint_path_list = np.reshape(np.array(respond.joint_config.data), (path_num, 40,  6))
                 grasp_pose_list = np.reshape(np.array(respond.grasp_poses.data), (grasp_num, 4, 4))
 
-                # self.visualize_points_grasppose(scene_points=scene_points, grasp_list=grasp_pose_list)
+                # self.actor.visualize_points_grasppose(scene_points=scene_points_world,
+                #                                       grasp_list=grasp_pose_list)
 
 
                 if joint_path_list.shape[0] == 0 or joint_path_list[0][0][0] == 10.0:
                     print(f"no valid path!")
                     self.actor.freeze_release(option=False) # To make the target object be released
+                    self.actor.clear_constraints()
                     self.actor.env.place_back_objects()
                 else:
                     print(f"start moving!")
@@ -152,81 +170,9 @@ class ros_node(object):
                         for idx, waypoint in enumerate(joint_path):
                             waypoint.extend([0, 0, 0])
                             self.actor.env.move(waypoint, obs=False, config=True, repeat=120)
-                            
-                            
-                            
-                            
-                            # observation, _, _ = self.actor.env.step(waypoint,
-                            #                                         obs=False,
-                            #                                         config=True,
-                            #                                         repeat=120,
-                            #                                         raw_data="target")
-                            # mid_tar_points = np.array(observation[0][0])
-                            # mid_obs_points = np.array(self.actor.env._get_observation(vis=False,
-                            #                                                         raw_data="obstaacle")[0][0])
-
-                            # if idx % 6 == 0 and idx > 0:
-                            #     print(f"len(mid_tar_points): {len(mid_tar_points)}")
-                            #     if len(mid_tar_points) > 100:
-                            #         header = rospy.Header()
-                            #         header.stamp = rospy.Time.now()
-                            #         header.frame_id = 'base_link'  # Replace with your desired frame ID
-                            #         full_pc = np.concatenate((mid_tar_points[:, :3], mid_obs_points[:, :3]), axis=0)
-                            #         contact_request.pc_full = create_cloud_xyz32(header, full_pc)
-                            #         contact_request.pc_target = create_cloud_xyz32(header, mid_tar_points[:, :3])
-                            #         contact_request.mode = 1
-                            #         grasp_poses = self.contact_client(contact_request).grasp_poses
-                            #         self.visualize_points_grasppose(full_pc[:, :3], grasp_poses)
-
-                            
-                            # Start of middle grasp generation
-                            # if idx % 6 == 0 and idx > 0:
-                            #     (obstacle_points,
-                            #      target_points,
-                            #      scene_points) = self.actor.get_pc_state(frame="camera",
-                            #                                              target_only=True,
-                            #                                              concat=False)
-                            #     if target_points is not None:
-                            #         # Generate grasp poses part
-                            #         header = rospy.Header()
-                            #         header.stamp = rospy.Time.now()
-                            #         header.frame_id = 'base_link'  # Replace with your desired frame ID
-                            #         full_pc = np.concatenate((obstacle_points[:, :3], target_points[:, :3]), axis=0)
-                            #         contact_request.pc_full = create_cloud_xyz32(header, full_pc)
-                            #         contact_request.pc_target = create_cloud_xyz32(header, target_points[:, :3])
-                            #         contact_request.mode = 1
-                            #         grasp_poses = self.contact_client(contact_request).grasp_poses
-
-                            #         grasp_camera_list = [np.array(grasp_pose.pred_grasps_cam)
-                            #                             for grasp_pose in grasp_poses]
-                                    
-                            #         grasp_score_list = [np.array(grasp_pose.score)
-                            #                             for grasp_pose in grasp_poses]
-
-                            #         camera2base_mat = np.dot(self.actor.env._get_ef_pose('mat'),
-                            #                                 np.linalg.inv(self.actor.env.cam_offset))
-                            #         grasp_world_list = [np.dot(camera2base_mat, grasp_camera.reshape(4,4))
-                            #                             for grasp_camera in grasp_camera_list]
-                                    
-                            #         full_points_camera = np.hstack((full_pc, np.ones((len(full_pc), 1))))
-                            #         full_points_world = np.dot(full_points_camera, camera2base_mat.T)
-                                
-                            #         custom_req = self.setup_path_planning_req(np.array(grasp_world_list), 
-                            #                                                   np.array(grasp_score_list))
-                            #         respond = self.simulation_client(custom_req)
-
-                            #     new_num = respond.joint_config.layout.dim[0].size
-                            #     new_joint_cfg_list = np.reshape(np.array(respond.joint_config.data), (new_num, 6))
-                            #     new_grasp_pose_list = np.reshape(np.array(respond.grasp_poses.data),
-                            #                                      (new_num, 4, 4))
-                            #     print(f"new_joint_cfg_list: {new_joint_cfg_list}\n\n")
-                            #     print(f"new_grasp_pose_list: {new_grasp_pose_list}\n\n")
-                            #     self.visualize_points_grasppose(full_points_world[:, :3], grasp_world_list)
-                            # End of middle grasp generation
-                        
                         
                         # Pregrasp to grasp
-                        for _ in range(4):
+                        for _ in range(5):
                             self.actor.env.move([0, 0, 0.01, 0, 0, 0])
                         
                         # Start to grasp
@@ -241,7 +187,8 @@ class ros_node(object):
                         self.actor.replace_target_object()
                         self.actor.env._panda.reset(self.actor.init_joint_pose)
                         self.actor.freeze_release(option=True)
-                        # break # grasp one time
+                        break # grasp one time
+                    
                     
                     # print(f"move by predefined path!!!")
                     # # Pre-defined path
@@ -251,15 +198,18 @@ class ros_node(object):
                     #             self.actor.move_directly(waypoint)
                     #             time.sleep(0.5)
 
-
                     self.actor.freeze_release(option=False)
+                    self.actor.clear_constraints()
                     self.actor.env.place_back_objects()
             else:
                 self.actor.freeze_release(option=False) # To make the target object be released
+                self.actor.clear_constraints()
                 print(f"no grasp pose")
 
-    def setup_path_planning_req(self, car_poses, poses_score=None, start_joint=None, target_points=None, obstacle_points=None):
-        waypoint_num = len(car_poses)
+
+    def setup_path_planning_req(self, car_poses, poses_score=None, start_joint=None,
+                                target_points=None, obstacle_points=None):
+        grasp_mat_num = len(car_poses)
         poses_req = path_planningRequest()
         # Fill in the header
         poses_req.env_data.header.stamp = rospy.Time.now()
@@ -278,9 +228,9 @@ class ros_node(object):
         car_poses_flat = car_poses.flatten()
         for _ in range(3):
             poses_req.env_data.grasp_poses.layout.dim.append(std_msgs.msg.MultiArrayDimension())
-        poses_req.env_data.grasp_poses.layout.dim[0].label = "waypoint_num"
-        poses_req.env_data.grasp_poses.layout.dim[0].size = waypoint_num  # Size of each pose (assuming 4x4 matrix)
-        poses_req.env_data.grasp_poses.layout.dim[0].stride = waypoint_num*16  # Total size of the array (4x4 matrix)
+        poses_req.env_data.grasp_poses.layout.dim[0].label = "grasp_mat_num"
+        poses_req.env_data.grasp_poses.layout.dim[0].size = grasp_mat_num  # Size of each pose (assuming 4x4 matrix)
+        poses_req.env_data.grasp_poses.layout.dim[0].stride = grasp_mat_num*16  # Total size of the array (4x4 matrix)
         poses_req.env_data.grasp_poses.layout.data_offset = 0
         poses_req.env_data.grasp_poses.layout.dim[1].label = "grasp_matrix_height"
         poses_req.env_data.grasp_poses.layout.dim[1].size = 4  # Size of each pose (assuming 4x4 matrix)
@@ -297,72 +247,7 @@ class ros_node(object):
             poses_req.env_data.start_joint = start_joint
         return poses_req
 
-    def create_grasp_geometry(self, grasp_pose, length=0.08, width=0.08):
-        """Create a geometry representing a grasp pose as a U shape."""
-        # Define the grasp frame
-        frame = grasp_pose.reshape(4,4)
-        # Define the U shape as a line set
-        line_set = o3d.geometry.LineSet()
-        line_set.points = o3d.utility.Vector3dVector([
-            [0, 0, 0],
-            [width/2, 0, 0],
-            [-width/2, 0, 0],
-            [width/2, 0, length/2],
-            [-width/2, 0, length/2],
-            [0, 0, -length/2]
-        ])
-        line_set.lines = o3d.utility.Vector2iVector([
-            [0, 1], [0, 2], [1, 3], [2, 4], [0, 5]
-        ])
-        line_set.transform(frame)
 
-        return line_set
-
-    def create_middle_waypoints(self, goal_pose, start_pose):
-        if len(goal_pose) == 16:
-            goal_pose = np.array(goal_pose).reshape(4, 4)
-        drawback_matrix = np.identity(4)
-        drawback_matrix[2, 3] = -0.02 # drawback 2cm
-        goal_pose = np.dot(np.dot(goal_pose, drawback_matrix), drawback_matrix) # make the grasp pose drawback 4cm
-        pre_pose = goal_pose
-        middle_waypoints = []
-        middle_waypoints.append(goal_pose)
-        for i in range(28):
-            mat = np.eye(4)
-            retreat_matrix = np.dot(pre_pose, drawback_matrix)
-            propotion = np.dot(retreat_matrix[:3, 2], start_pose[:3, 2])
-            mat[:3, :3] = max(propotion, 0.8) * retreat_matrix[:3, :3] + (1 - max(propotion, 0.8))* start_pose[:3, :3]
-            # print(f"propotion: {propotion}")
-            if propotion > 0.95:
-                # print(f"translation!!")
-                # mat[:3, 3] = propotion * retreat_matrix[:3, 3] + (1-propotion) * start_pose[:3, 3]
-                step_vector = (start_pose[:3, 3] - retreat_matrix[:3, 3])/(28-i)
-                for j in range(28 - i):
-                    tmp_mat = np.eye(4)
-                    tmp_mat[:3, :3] = mat[:3, :3]
-                    tmp_mat[:3, 3] = retreat_matrix[:3, 3] + j * step_vector
-                    middle_waypoints.append(tmp_mat)
-                middle_waypoints.append(start_pose)
-                middle_waypoints.reverse()
-                return middle_waypoints
-            else:
-                mat[:3, 3] = retreat_matrix[:3, 3]
-                pre_pose = mat
-                middle_waypoints.append(mat)
-        middle_waypoints.append(start_pose)
-        middle_waypoints.reverse()
-        middle_waypoints = np.array(middle_waypoints)
-        return middle_waypoints
-
-    def visualize_points_grasppose(self, scene_points, grasp_list):
-        
-        # Visualize pointcloud and grasp pose part
-        grasp_geometries = [self.create_grasp_geometry(grasp_pose) for grasp_pose in grasp_list]
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(np.array(scene_points[:, :3]))
-        axes = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1)
-        o3d.visualization.draw_geometries([pcd, axes, *grasp_geometries])
-        # End of visualization
         
     def setting_contact_req(self, color_image, depth_image,
                             mask_image, intrinsic_matrix,
@@ -391,6 +276,20 @@ class ros_node(object):
         grasp_poses = self.contact_client(contact_request).grasp_poses
 
         return grasp_poses
+    
+    def simple_callback(self, msg):
+        self.actor.env.reset(save=False, enforce_face_target=False,
+                             init_joints=self.actor.init_joint_pose,
+                             num_object = 2,
+                             reset_free=True)
+        # self.actor.env._panda.reset(self.actor.init_joint_pose)
+        # self.actor.env.place_back_objects()
+        # self.actor.env._randomly_place_objects_pack(self.actor.env._get_random_object(2), scale=1, if_stack=True)
+
+        point_cloud = self.actor.get_world_pointcloud(raw_data=True)
+        print(f"point_cloud: {point_cloud}")
+
+
 
 if __name__ == "__main__":
     rospy.init_node("real")
