@@ -21,6 +21,7 @@ class ros_node(object):
     def __init__(self, renders):
         self.actor = ActorWrapper(renders=renders)
         self.simulation_server = rospy.Service("simulation_data", path_planning, self.create_path)
+        self.cart_path = True
 
     def create_path(self, request):
         self.obs_pc_world = np.array(list(point_cloud2.read_points(request.env_data.obstacle_pointcloud,
@@ -64,10 +65,12 @@ class ros_node(object):
             print(f"simulate duration: {time.time()-starttime}!!!!!!!!!!!!!!!!!")
         # Be careful, the list of score will increase due to the rotate of the 6th joint
         (grasp_joint_list, grasp_poses_list,
-         elbow_pos_list, grasp_score_list) = self.actor.grasp_pose2grasp_joint(grasp_poses=self.grasp_poses,
-                                                                               grasp_scores=self.grasp_scores)
+         elbow_pos_list, first3_list,
+         grasp_score_list) = self.actor.grasp_pose2grasp_joint(grasp_poses=self.grasp_poses,
+                                                               grasp_scores=self.grasp_scores)
         grasp_joint_list = np.array(grasp_joint_list)
         elbow_pos_list = np.array(elbow_pos_list)
+        first3_list = np.array(first3_list)
         grasp_poses_list = np.array(grasp_poses_list)
 
         motion_planning_start_time = time.time()
@@ -82,12 +85,14 @@ class ros_node(object):
              gripper_orn_list) = self.actor.motion_planning(grasp_joint_cfg=grasp_joint_list,
                                                             start_joint=self.start_joint,
                                                             elbow_pos_list=elbow_pos_list,
-                                                            grasp_poses_list=grasp_poses_list)
+                                                            grasp_poses_list=grasp_poses_list,
+                                                            cart=self.cart_path)
             print(f"motion_planning_time:{time.time() - motion_planning_start_time}")
         else:
             (highest_joint_cfg_list,
              highest_elbow_pos_list,
              highest_grasp_poses_list) = self.actor.dbscan_grouping(elbow_pos_list,
+                                                                    first3_list,
                                                                     grasp_joint_list,
                                                                     grasp_score_list,
                                                                     grasp_poses_list,
@@ -99,7 +104,8 @@ class ros_node(object):
              gripper_orn_list) = self.actor.motion_planning(grasp_joint_cfg=highest_joint_cfg_list,
                                                             start_joint=self.start_joint,
                                                             elbow_pos_list=highest_elbow_pos_list,
-                                                            grasp_poses_list=grasp_poses_list)
+                                                            grasp_poses_list=grasp_poses_list,
+                                                            cart=self.cart_path)
             print(f"motion_planning_time:{time.time() - motion_planning_start_time}")
 
 
@@ -297,5 +303,5 @@ class ros_node(object):
 
 if __name__ == "__main__":
     rospy.init_node("sim")
-    real_actor_node = ros_node(renders=0)
+    real_actor_node = ros_node(renders=1)
     rospy.spin()

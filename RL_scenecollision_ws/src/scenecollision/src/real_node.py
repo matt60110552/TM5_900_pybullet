@@ -28,7 +28,7 @@ class ros_node(object):
         self.simple_sub = rospy.Subscriber("simple_cmd", Int32, self.simple_callback)
 
         self.simulation_client = rospy.ServiceProxy("simulation_data", path_planning)
-        self.object_num = 3
+        self.object_num = 1
     def get_env_callback(self, msg):
         for _ in range(msg.data):
             # self.actor.env.reset(save=False, enforce_face_target=False,
@@ -78,8 +78,8 @@ class ros_node(object):
             # self.actor.env.move([0.02, 0.03, 0.02, 0.1, -0.1, 0])
             # self.actor.env.move([0.02, 0.03, 0.02, 0.1, -0.1, 0])
 
-            for _ in range(6):
-                self.actor.env.move([-0.03, 0.03, 0.0, 0., 0.05, 0])
+            # for _ in range(6):
+            #     self.actor.env.move([-0.03, 0.03, 0.0, 0., 0.05, 0])
             
             grasp_list = []
             score_list = []
@@ -187,7 +187,7 @@ class ros_node(object):
                         self.actor.replace_target_object()
                         self.actor.env._panda.reset(self.actor.init_joint_pose)
                         self.actor.freeze_release(option=True)
-                        break # grasp one time
+                        # break # grasp one time
                     
                     
                     # print(f"move by predefined path!!!")

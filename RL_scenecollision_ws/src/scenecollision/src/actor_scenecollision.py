@@ -19,7 +19,7 @@ import copy
 import alphashape
 from sklearn.cluster import DBSCAN
 from scipy.spatial.transform import Rotation as R
-
+from utils.planner_matt import GraspPlanner
 class ActorWrapper(object):
     """
     wrapper testing, use ray to create multiple pybullet
@@ -40,13 +40,12 @@ class ActorWrapper(object):
         # self.furniture_name = "shelf"
         # self.furniture_name = "shelf_2"
         # self.furniture_name = "shelf_3"
-        # self.furniture_name = "shelf_4"
-        self.furniture_name = "shelf_5"
+        self.furniture_name = "shelf_4"
+        # self.furniture_name = "shelf_5"
         self.env = SimulatedYCBEnv(renders=renders)
         self.env._load_index_objs(test_file_dir)
         self.env.reset(save=False, enforce_face_target=True, furniture=self.furniture_name)
         self.grasp_checker = ValidGraspChecker(self.env)
-        # self.planner = GraspPlanner()
         self.target_points = None   # This is for merging point-cloud from different time
         self.obstacle_points = None
         self.simulation_id = simulation_id
@@ -458,7 +457,6 @@ class ActorWrapper(object):
         # This function use the 2 pointcloud to create a object in pybullet
         combined_obs_pc = self.extend_obs_pc(obs_pc=obs_pc, target_pc=target_pc)
         obs_alph = alphashape.alphashape(combined_obs_pc, 16)
-
         obs_vertices = obs_alph.vertices
         obs_faces = np.array(obs_alph.faces).flatten()
 
@@ -520,8 +518,9 @@ class ActorWrapper(object):
         # return obs_body_id, tar_body_id
         return obs_body_id
 
-    def motion_planning(self, grasp_joint_cfg, start_joint=None, elbow_pos_list=None, grasp_poses_list=None):
-
+    def motion_planning(self, grasp_joint_cfg, start_joint=None, elbow_pos_list=None, grasp_poses_list=None, cart=False):
+        if cart:
+            return self.cartesian_motion_planning(grasp_poses_list)
         # Record web Bitstar
         file = open("/home/user/RL_TM5_900_pybullet/RL_scenecollision_ws/src/scenecollision/src/path_record.txt", 'w')
         timestamp = time.time()  # Get the current timestamp
@@ -677,16 +676,21 @@ class ActorWrapper(object):
             valid_elbow_list = []
             valid_score_list = []
             valid_grasp_list = []
+            valid_first3_list = []
             for idx, grasp_joint in enumerate(grasp_joint_list):
                 if self.pb_ompl_interface.is_state_valid(grasp_joint):
                     valid_joint_list.append(grasp_joint)
                     elbow_pos, _ = p.getLinkState(self.env._panda.pandaUid, 5)[4:6]
+                    first3 = []
+                    for i in range(1, 5):
+                        first3.append(p.getLinkState(self.env._panda.pandaUid, i)[4:5][0])
+                    valid_first3_list.append(first3)
                     valid_elbow_list.append(elbow_pos)
                     valid_score_list.append(score_list[idx])
                     valid_grasp_list.append(grasp_poses_list[idx])
                 # time.sleep(0.05)
 
-            return valid_joint_list, valid_grasp_list, valid_elbow_list, valid_score_list
+            return valid_joint_list, valid_grasp_list, valid_elbow_list, valid_first3_list, valid_score_list
         else:
             """
             Turn poses in cartesian into joint space and then check they are valid or not 
@@ -818,7 +822,7 @@ class ActorWrapper(object):
         return all_mat_list
 
     
-    def dbscan_grouping(self, elbow_pos_list, grasp_joint_list,
+    def dbscan_grouping(self, elbow_pos_list, first3_list, grasp_joint_list,
                         grasp_score_list, grasp_poses_list, pointcloud=None):
         """
         This function use dbscan to group the grasp pose depend on elbow's position
@@ -828,26 +832,51 @@ class ActorWrapper(object):
         highest_grasp_poses_list = []
         epsilon = 0.03  # Maximum distance between samples for one to be considered as in the neighborhood of the other
         min_samples = 1  # Minimum number of samples in a neighborhood for a data point to be considered as a core point
+        
+        # Group poses by gripper's position with dbscan
+        tmp_grasp_list = grasp_poses_list[:, :3, 3]
+        dbscan = DBSCAN(eps=epsilon, min_samples=min_samples).fit(tmp_grasp_list)
+        first_pos_groups = {}
+        for idx, label in enumerate(dbscan.labels_):
+            first_pos_groups.setdefault(label, []).append(first3_list[idx])
+
+        keys = set(first_pos_groups.keys())
+        std_val_list = []
+        for key in keys:
+            tmp_first3_poses_list = first_pos_groups.pop(key)
+            std_val_list.append(self.compute_standard_deviation(np.array(tmp_first3_poses_list)))
+        std_val_list = np.array(std_val_list)
+        print(f"gripper std_val_list: {std_val_list}")
+        print(f"gripper mean of std_val_list: {np.mean(std_val_list, axis=0)}\n")
+
+
+        # Group poses by elbow's position with dbscan
         dbscan = DBSCAN(eps=epsilon, min_samples=min_samples).fit(elbow_pos_list)
         elbow_pos_groups = {}
         joint_value_groups = {}
         scores_groups = {}
         grasp_poses_group = {}
+        first_pos_groups = {}
         for idx, label in enumerate(dbscan.labels_):
             elbow_pos_groups.setdefault(label, []).append(elbow_pos_list[idx])
+            first_pos_groups.setdefault(label, []).append(first3_list[idx])
             joint_value_groups.setdefault(label, []).append(grasp_joint_list[idx])
             scores_groups.setdefault(label, []).append(grasp_score_list[idx])
             grasp_poses_group.setdefault(label, []).append(grasp_poses_list[idx])
         
         # Get the grasp poses with highest score in each groups
         keys = set(joint_value_groups.keys())
+        std_val_list = []
         for key in keys:
             tmp_elbow_poses_list = elbow_pos_groups.pop(key)
+            tmp_first3_poses_list = first_pos_groups.pop(key)
             tmp_grasp_joint_cfgs_list = joint_value_groups.pop(key)
             tmp_scores_list = scores_groups.pop(key)
             tmp_grasp_poses_list = grasp_poses_group.pop(key)
             print(f"tmp_grasp_joint_cfgs_list: {len(tmp_grasp_joint_cfgs_list)}")
 
+            # Calculate the standard deviation of first 3 links
+            std_val_list.append(self.compute_standard_deviation(np.array(tmp_first3_poses_list)))
             # Choose the grasp pose with most "middle" pose
             if len(tmp_grasp_poses_list) > 1:
                 idx = self.select_representative_grasp_poses(tmp_grasp_poses_list)
@@ -856,12 +885,14 @@ class ActorWrapper(object):
                 highest_joint_cfg_list.append(tmp_grasp_joint_cfgs_list[idx])
                 highest_elbow_pos_list.append(tmp_elbow_poses_list[idx])
                 highest_grasp_poses_list.append(tmp_grasp_poses_list[idx])
+        std_val_list = np.array(std_val_list)
+        print(f"std_val_list: {std_val_list}")
+        print(f"mean of std_val_list: {np.mean(std_val_list, axis=0)}")
 
         highest_joint_cfg_list = np.array(highest_joint_cfg_list)
         highest_elbow_pos_list = np.array(highest_elbow_pos_list)
         highest_grasp_poses_list = np.array(highest_grasp_poses_list)
         grasp_poses_list = highest_grasp_poses_list
-
         return highest_joint_cfg_list, highest_elbow_pos_list, highest_grasp_poses_list
 
     def remove_sim_fureniture(self):
@@ -958,6 +989,64 @@ class ActorWrapper(object):
             o3d.visualization.draw_geometries([pcd, axes, *grasp_geometries])
             # End of visualization
 
+    def compute_standard_deviation(self, group_list):
+        std_devs = []
+        # print(f"group_list: {group_list.shape}, {group_list}")
+        for i in range(4):  # There are 3 points in each pose
+            # Extract all the xyz coordinates of the i-th point across all poses
+            points = group_list[:, i, :]  # Shape will be (num_poses, 3)
+            # print(f"points: {points}")
+            # Compute the standard deviation along each axis (x, y, z)
+            std_devs.append(np.std(points, axis=0))
+        std_devs = np.sum(std_devs, axis=-1)
+        # print(f"================")
+        # print(f"std_devs: {std_devs}\n")
+        return std_devs
+
+    def cartesian_motion_planning(self, goal_mat_list):
+        self.move_directly(self.init_joint_pose)
+        self.obstacles = [self.env.plane_id, self.sim_furniture_id]
+        self.cart_planner = GraspPlanner(obstacles = self.obstacles)
+        pos, orn = self.env._get_ef_pose()
+        ef_pose_list = [*pos, *orn]
+        joint_paths = []
+        gripper_pos_paths = []
+        gripper_ori_paths = []
+        for gaol_mat in goal_mat_list:
+            goal_pos = pack_pose(gaol_mat)
+            goal_pos[3:] = ros_quat(goal_pos[3:])
+            solver = self.cart_planner.plan(ef_pose_list, goal_pos, path_length=40, runTime=10.)
+            if solver is None:
+                print(f"no path")
+                None_path_list = [[[None] * 6 for _ in range(40)]]
+                return None_path_list, None_path_list, None_path_list, None_path_list
+            path = solver.getSolutionPath().getStates()
+            joint_path = []
+            gripper_ori_path = []
+            gripper_pos_path = []
+            print(f"ef_pose_list: {ef_pose_list}")
+            print(f"path:")
+            for i in range(len(path)):
+                waypoint = path[i]
+                rot = waypoint.rotation()
+                pos_action = [waypoint.getX(), waypoint.getY(), waypoint.getZ()]
+                ori_action = [rot.x, rot.y, rot.z, rot.w]
+                gripper_pos_path.append(pos_action)
+                gripper_ori_path.append(ori_action)
+                joint_cfg = list(p.calculateInverseKinematics(self.env._panda.pandaUid,
+                                                              self.env._panda.pandaEndEffectorIndex,
+                                                              pos_action,
+                                                              ori_action,
+                                                              maxNumIterations=500,
+                                                              residualThreshold=1e-8))
+                print(f"pos_action: {pos_action}")
+                print(f"ori_action: {ori_action}")
+                joint_path.append(joint_cfg[:6])
+            print(f"goal_pos: {goal_pos}")
+            joint_paths.append(joint_path)
+            gripper_pos_paths.append(gripper_pos_path)
+            gripper_ori_paths.append(gripper_ori_path)
+        return joint_paths, None, gripper_pos_paths, gripper_ori_paths
 
 @ray.remote(num_cpus=1, num_gpus=0.12)
 class ActorWrapper012(ActorWrapper):
