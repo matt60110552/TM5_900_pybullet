@@ -152,17 +152,10 @@ class ros_node(object):
                     self.actor.env.place_back_objects()
                 else:
                     print(f"start moving!")
-                    # for joint_path in joint_path_list:
-                    #     middle_pc_list, camera2base_list = self.actor.move2grasp(joint_path=joint_path) # Remember, move2grasp will release the object itself
-                    #     self.actor.replace_target_object()
-                    #     self.actor.env._panda.reset(self.actor.init_joint_pose)
-                    #     self.actor.freeze_release(option=True)
-                    #     break
-                    # self.actor.freeze_release(option=False)
-                    # self.actor.env.place_back_objects()
-                    
                     # Bitstar path
-                    for joint_path in joint_path_list:
+                    for idx, joint_path in enumerate(joint_path_list):
+                        # if idx != 0 and idx != len(joint_path_list) - 1:
+                        #     continue
                         joint_path = joint_path.tolist()
                         retreat_joint_path = copy.deepcopy(joint_path)
                         retreat_joint_path.reverse()

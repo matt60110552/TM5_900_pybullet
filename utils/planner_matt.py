@@ -209,3 +209,9 @@ class GraspPlanner():
             print("No solution found.")
             p.resetBasePositionAndOrientation(self.validityChecker.gripper_id, [-5., 0., 0.1], [0, 0, 0, 1])
             return None
+    
+    def show_path(self, gripper_pos_path, gripper_ori_path):
+        for pos, ori in zip(gripper_pos_path, gripper_ori_path):
+            p.resetBasePositionAndOrientation(self.validityChecker.gripper_id, pos, ori)
+            time.sleep(0.1)
+        p.resetBasePositionAndOrientation(self.validityChecker.gripper_id, [-5., 0., 0.1], [0, 0, 0, 1])

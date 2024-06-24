@@ -39,8 +39,8 @@ class ActorWrapper(object):
         # self.furniture_name = "table"
         # self.furniture_name = "shelf"
         # self.furniture_name = "shelf_2"
-        # self.furniture_name = "shelf_3"
-        self.furniture_name = "shelf_4"
+        self.furniture_name = "shelf_3"
+        # self.furniture_name = "shelf_4"
         # self.furniture_name = "shelf_5"
         self.env = SimulatedYCBEnv(renders=renders)
         self.env._load_index_objs(test_file_dir)
@@ -65,8 +65,8 @@ class ActorWrapper(object):
         if self.furniture_name == "shelf":
             self.init_joint_pose = [-0.15, -1.55, 1.8, -0.1, 1.8, 0.0, 0.0, 0.0, 0.0]
         elif self.furniture_name == "shelf_2":
-            # self.init_joint_pose = [-0.16361913, -1.5037375, 1.80286642, -0.14974172, 1.81350627, -0.00209805, 0.0, 0.0, 0.0]
-            self.init_joint_pose = [-0.163, -1.755, 2.506, -0.508, 1.832, -0.016, 0.0, 0.0, 0.0]
+            self.init_joint_pose = [-0.16361913, -1.5037375, 1.80286642, -0.14974172, 1.81350627, -0.00209805, 0.0, 0.0, 0.0]
+            # self.init_joint_pose = [-0.163, -1.755, 2.506, -0.508, 1.832, -0.016, 0.0, 0.0, 0.0]
         elif self.furniture_name == "shelf_3":
             self.init_joint_pose = [-0.15, -1.55, 1.8, -0.1, 1.8, 0.0, 0.0, 0.0, 0.0]
         elif self.furniture_name == "shelf_4":
@@ -541,6 +541,8 @@ class ActorWrapper(object):
         print(f"elbow_pos_list: {elbow_pos_list}, init_elbow_pos: {init_elbow_pos}")
         dis = np.linalg.norm(elbow_pos_list - init_elbow_pos, axis=1)
         sorted_grasp_joint_cfg = grasp_joint_cfg[np.argsort(dis)]
+        sorted_grasp_poses_list = grasp_poses_list[np.argsort(dis)]
+        sorted_elbow_pos_list = elbow_pos_list[np.argsort(dis)]
         # cfg_pool is used to choose the new start point for web RRT
         self.cfg_pool = []
         # Find first path part
@@ -561,7 +563,9 @@ class ActorWrapper(object):
                 (res, path,
                 elbow_path,
                 gripper_pos_path,
-                gripper_orn_path) = self.pb_ompl_interface.plan(joint_cfg[:6], interpolate_num=40)
+                gripper_orn_path) = self.pb_ompl_interface.plan(joint_cfg[:6],
+                                                                goal_mat = sorted_grasp_poses_list[joint_cfg_idx],
+                                                                interpolate_num=40)
                 if res:
                     path_list.append(path)
                     elbow_path_list.append(elbow_path)
@@ -576,14 +580,14 @@ class ActorWrapper(object):
                         file.write(f"{gripper_pos}\n")
                     file.write(f"\n")
                     np.delete(remain_grasp_joint_cfg, joint_cfg_idx)
-                    np.delete(elbow_pos_list, joint_cfg_idx)
-                    np.delete(grasp_poses_list, joint_cfg_idx)
+                    np.delete(sorted_elbow_pos_list, joint_cfg_idx)
+                    np.delete(sorted_grasp_poses_list, joint_cfg_idx)
                     break
         
         for idx, joint_cfg in enumerate(remain_grasp_joint_cfg):
             
             print(f"web RRT2!!!!!!!!!!!!!!!")
-            path_idx, waypoint_idx = self.select_pre_waypoint(grasp_pose_mat=grasp_poses_list[idx])
+            path_idx, waypoint_idx = self.select_pre_waypoint(grasp_pose_mat=sorted_grasp_poses_list[idx])
             if path_idx == 0 and waypoint_idx == 0:
                 start_state = self.init_joint_pose
             else:
@@ -602,7 +606,9 @@ class ActorWrapper(object):
             (res, extend_path,
             extend_elbow_path,
             extend_gripper_pos_path,
-            extend_gripper_orn_path) = self.pb_ompl_interface.plan(joint_cfg[:6], interpolate_num=extend_length, allowed_time=4)
+            extend_gripper_orn_path) = self.pb_ompl_interface.plan(joint_cfg[:6],
+                                                                   goal_mat = sorted_grasp_poses_list[idx],
+                                                                   interpolate_num=extend_length, allowed_time=4)
             print(f"extend_path: {len(extend_path)}\n\n")
 
             if res:
@@ -844,7 +850,8 @@ class ActorWrapper(object):
         std_val_list = []
         for key in keys:
             tmp_first3_poses_list = first_pos_groups.pop(key)
-            std_val_list.append(self.compute_standard_deviation(np.array(tmp_first3_poses_list)))
+            std_val_list.append(self.compute_standard_deviation(np.array(tmp_first3_poses_list),
+                                                                txt_name = 'gripper_std.txt'))
         std_val_list = np.array(std_val_list)
         print(f"gripper std_val_list: {std_val_list}")
         print(f"gripper mean of std_val_list: {np.mean(std_val_list, axis=0)}\n")
@@ -989,18 +996,24 @@ class ActorWrapper(object):
             o3d.visualization.draw_geometries([pcd, axes, *grasp_geometries])
             # End of visualization
 
-    def compute_standard_deviation(self, group_list):
-        std_devs = []
-        # print(f"group_list: {group_list.shape}, {group_list}")
-        for i in range(4):  # There are 3 points in each pose
-            # Extract all the xyz coordinates of the i-th point across all poses
-            points = group_list[:, i, :]  # Shape will be (num_poses, 3)
-            # print(f"points: {points}")
-            # Compute the standard deviation along each axis (x, y, z)
-            std_devs.append(np.std(points, axis=0))
-        std_devs = np.sum(std_devs, axis=-1)
-        # print(f"================")
-        # print(f"std_devs: {std_devs}\n")
+    def compute_standard_deviation(self, group_list, txt_name="elbow_std.txt"):
+        dir_name = "/home/user/RL_TM5_900_pybullet/RL_scenecollision_ws/src/scenecollision/src/std_record/"
+
+        with open(dir_name + txt_name, 'a') as file: 
+            std_devs = []
+            # print(f"group_list: {group_list.shape}, {group_list}")
+            for i in range(4):  # There are 3 points in each pose
+                # Extract all the xyz coordinates of the i-th point across all poses
+                points = group_list[:, i, :]  # Shape will be (num_poses, 3)
+                # print(f"points: {points}")
+                # Compute the standard deviation along each axis (x, y, z)
+                std_devs.append(np.std(points, axis=0))
+            std_devs = np.sum(std_devs, axis=-1)
+            # print(f"================")
+            # print(f"std_devs: {std_devs}\n")
+            # Write a new value to the file
+            file.write(str(std_devs))
+            file.write('\n')
         return std_devs
 
     def cartesian_motion_planning(self, goal_mat_list):
@@ -1015,7 +1028,7 @@ class ActorWrapper(object):
         for gaol_mat in goal_mat_list:
             goal_pos = pack_pose(gaol_mat)
             goal_pos[3:] = ros_quat(goal_pos[3:])
-            solver = self.cart_planner.plan(ef_pose_list, goal_pos, path_length=40, runTime=10.)
+            solver = self.cart_planner.plan(ef_pose_list, goal_pos, path_length=40, runTime=1.)
             if solver is None:
                 print(f"no path")
                 None_path_list = [[[None] * 6 for _ in range(40)]]
@@ -1024,8 +1037,6 @@ class ActorWrapper(object):
             joint_path = []
             gripper_ori_path = []
             gripper_pos_path = []
-            print(f"ef_pose_list: {ef_pose_list}")
-            print(f"path:")
             for i in range(len(path)):
                 waypoint = path[i]
                 rot = waypoint.rotation()
@@ -1038,15 +1049,21 @@ class ActorWrapper(object):
                                                               pos_action,
                                                               ori_action,
                                                               maxNumIterations=500,
-                                                              residualThreshold=1e-8))
-                print(f"pos_action: {pos_action}")
-                print(f"ori_action: {ori_action}")
-                joint_path.append(joint_cfg[:6])
-            print(f"goal_pos: {goal_pos}")
+                                                              residualThreshold=1e-8))[:6]
+                # self.move_directly(joint_cfg) # Directly move the arm to the joint_cfg
+                # time.sleep(0.1)
+                joint_path.append(joint_cfg)
+            self.move_directly(self.init_joint_pose)
             joint_paths.append(joint_path)
             gripper_pos_paths.append(gripper_pos_path)
             gripper_ori_paths.append(gripper_ori_path)
+        # for gripper_pos_path, gripper_ori_path in zip(gripper_pos_paths, gripper_ori_paths):
+        #     self.move_directly(self.init_joint_pose)
+        #     self.cart_planner.show_path(gripper_pos_path, gripper_ori_path)
         return joint_paths, None, gripper_pos_paths, gripper_ori_paths
+    
+    # def create_approach_waypoint(self, grasp_list, joint_list):
+
 
 @ray.remote(num_cpus=1, num_gpus=0.12)
 class ActorWrapper012(ActorWrapper):
