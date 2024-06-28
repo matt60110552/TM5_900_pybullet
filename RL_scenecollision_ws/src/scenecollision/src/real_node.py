@@ -18,7 +18,7 @@ from cv_bridge import CvBridge
 from scenecollision.srv import GraspGroup, GraspGroupRequest
 from scenecollision.srv import path_planning, path_planningRequest
 from scenecollision.msg import GraspPose, motion_planning
-from sensor_msgs.point_cloud2 import create_cloud_xyz32
+from sensor_msgs.point_cloud2 import create_cloud_xyz32666666666666666666
 
 class ros_node(object):
     def __init__(self, renders):
@@ -55,7 +55,7 @@ class ros_node(object):
             mask = np.ones_like(mask_image, dtype=int)
             mask_image = -(mask_image - mask)
             
-
+            matt_test = mask + mask_image
             # Get the pointcloud of target and obstacle in world frame
             noise_stddev = 0.015/np.sqrt(3)
             (obstacle_points_world,

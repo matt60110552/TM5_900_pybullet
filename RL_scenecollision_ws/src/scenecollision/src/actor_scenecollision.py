@@ -53,7 +53,7 @@ class ActorWrapper(object):
         self.joint_bounds = list(zip(self.env._panda._joint_min_limit, self.env._panda._joint_max_limit))[:6]
         self.joint_bounds[0] = (-1.57, 1.57)
         # disable the collision between the basse of TM5 and plane        
-        p.setCollisionFilterPair(self.env.plane_id, self.env._panda.pandaUid, -1, 0, enableCollision=False)
+        p.setCollisionFilterPair(self.env.plane_id, self.env._panda.p555555555555555555andaUid, -1, 0, enableCollision=False)
         
 
         # Dictionary of targets' pos, orn and constraint
@@ -73,9 +73,6 @@ class ActorWrapper(object):
             self.init_joint_pose = [-0.15, -1.55, 1.8, -0.1, 1.8, 0.0, 0.0, 0.0, 0.0]
         elif self.furniture_name == "shelf_5":
             self.init_joint_pose = [-0.163, -1.755, 2.506, -0.508, 1.832, -0.016, 0.0, 0.0, 0.0]
-        elif self.furniture_name == "table":
-            self.init_joint_pose = [-0., -0.95, 1.9, -0.1, 1.571, 0.0, 0.0, 0.0, 0.0]
-        elif self.furniture_name == "carton_box":
             self.init_joint_pose = [0.03, -1., 1.9, -0.1, 1.571, 0.0, 0.0, 0.0, 0.0]
 
         # Helper3D part, load first and then move the arm in function "get_surface_points"
@@ -98,14 +95,6 @@ class ActorWrapper(object):
         Load npy file by object names.
         '''
 
-        scale_str_num = len(f"_{self.env.object_scale[self.env.target_idx]}") * (-1)
-        obj_name = self.env.obj_path[self.env.target_idx].split('/')[-2][:scale_str_num]
-        data_dir = parent_dir + "/data/grasps/acronym"
-        tr = np.load(f'{data_dir}/{obj_name}.npy',
-                     allow_pickle=True,
-                     fix_imports=True,
-                     encoding="bytes")
-        grasp = tr.item()[b'transforms']
 
         # Transforms grasp pose to current position
 
