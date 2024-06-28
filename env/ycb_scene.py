@@ -161,7 +161,7 @@ class SimulatedYCBEnv():
         # Set table and plane
         plane_file = os.path.join(self.root_dir,  'data/objects/floor/model_normalized.urdf')  # _white
 
-        self.plane_id = p.loadURDF(plane_file, [0, 0, 0], useFixedBase=True)
+        self.plane_id = p.loadURDF(plane_file, [0, 0, -0.1], useFixedBase=True)
         if self.furniture_name == "table":
             furniture_file = os.path.join(self.root_dir,  'data/objects/table/models/model_normalized.urdf')
             self.furniture_pos = np.array([0.8, 0.0, 0.01])
