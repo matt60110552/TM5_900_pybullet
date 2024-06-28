@@ -1,0 +1,7 @@
+<launch>
+  <!-- Launch the real_node.py -->
+  <node name="matt_test_realworld_node" pkg="scenecollision" type="matt_test_realworld.py" output="screen">
+    <!-- Add any parameters if needed -->
+    <!-- Example: <param name="param_name" value="param_value"/> -->
+  </node>
+</launch>
