@@ -3,4 +3,4 @@
 	url = https://github.com/H-HChen/Helper3D.git
 [submodule "pybullet_ompl"]
 	path = pybullet_ompl
-	url = https://github.com/lyfkyle/pybullet_ompl.git
+	url = https://github.com/matt60110552/pybullet_ompl.git
