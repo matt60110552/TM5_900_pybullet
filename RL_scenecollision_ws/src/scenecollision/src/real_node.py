@@ -5,7 +5,7 @@ import sys
 import time
 import open3d as o3d
 import copy
-sys.path.append("/home/user/RL_TM5_900_pybullet")
+sys.path.append("/home/user/MATT_TM5_900_pybullet")
 from utils.utils import *
 # from replay_buffer import ReplayMemoryWrapper
 from actor_scenecollision import ActorWrapper
