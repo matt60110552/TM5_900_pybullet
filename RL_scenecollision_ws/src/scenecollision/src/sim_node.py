@@ -40,7 +40,7 @@ class ros_node(object):
             dims.append(i.size)
 
         self.grasp_poses = np.array(request.env_data.grasp_poses.data, dtype=np.float32).reshape(dims)
-        self.grasp_poses = self.grasp2pre_grasp(self.grasp_poses, drawback_dis=0.07) # Drawback a little
+        self.grasp_poses = self.grasp2pre_grasp(self.grasp_poses, drawback_dis=0.08) # Drawback a little
         self.grasp_scores = np.array(request.env_data.scores).reshape(len(self.grasp_poses))
         self.start_joint = np.array(request.env_data.start_joint)
         
@@ -86,7 +86,8 @@ class ros_node(object):
                                                             start_joint=self.start_joint,
                                                             elbow_pos_list=elbow_pos_list,
                                                             grasp_poses_list=grasp_poses_list,
-                                                            cart=self.cart_path)
+                                                            cart=self.cart_path,
+                                                            target_pointcloud=self.tar_pc_world)
             print(f"motion_planning_time:{time.time() - motion_planning_start_time}")
         else:
             (highest_joint_cfg_list,
@@ -105,7 +106,8 @@ class ros_node(object):
                                                             start_joint=self.start_joint,
                                                             elbow_pos_list=highest_elbow_pos_list,
                                                             grasp_poses_list=grasp_poses_list,
-                                                            cart=self.cart_path)
+                                                            cart=self.cart_path,
+                                                            target_pointcloud=self.tar_pc_world)
             print(f"motion_planning_time:{time.time() - motion_planning_start_time}")
 
 
@@ -116,7 +118,6 @@ class ros_node(object):
         gripper_orn_list = np.array(gripper_orn_list)
 
 
-        # elbow's linear middle way points planning
 
 
 

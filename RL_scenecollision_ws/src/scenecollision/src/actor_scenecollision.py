@@ -39,8 +39,8 @@ class ActorWrapper(object):
         # self.furniture_name = "table"
         # self.furniture_name = "shelf"
         # self.furniture_name = "shelf_2"
-        self.furniture_name = "shelf_3"
-        # self.furniture_name = "shelf_4"
+        # self.furniture_name = "shelf_3"
+        self.furniture_name = "shelf_4"
         # self.furniture_name = "shelf_5"
         self.env = SimulatedYCBEnv(renders=renders)
         self.env._load_index_objs(test_file_dir)
@@ -77,11 +77,6 @@ class ActorWrapper(object):
             self.init_joint_pose = [-0., -0.95, 1.9, -0.1, 1.571, 0.0, 0.0, 0.0, 0.0]
         elif self.furniture_name == "carton_box":
             self.init_joint_pose = [0.03, -1., 1.9, -0.1, 1.571, 0.0, 0.0, 0.0, 0.0]
-
-        # Helper3D part, load first and then move the arm in function "get_surface_points"
-        self.URDFPATH = f"/home/user/RL_TM5_900_pybullet/env/models/tm5_900/tm5_900_with_gripper_.urdf"
-        self.helper3d_arm_urdf = getURDF(self.URDFPATH, JointInfo=False, from_visual=False)
-        self.helper3d_link_names = ["shoulder_1_link", "arm_1_link", "arm_2_link", "wrist_1_link", "wrist_2_link", "wrist_3_link"]
 
 
     def rollout_once(self, vis=False):
@@ -518,7 +513,8 @@ class ActorWrapper(object):
         # return obs_body_id, tar_body_id
         return obs_body_id
 
-    def motion_planning(self, grasp_joint_cfg, start_joint=None, elbow_pos_list=None, grasp_poses_list=None, cart=False):
+    def motion_planning(self, grasp_joint_cfg, start_joint=None, elbow_pos_list=None,
+                        grasp_poses_list=None, cart=False, sim_object=False, target_pointcloud=None):
         if cart:
             return self.cartesian_motion_planning(grasp_poses_list)
         # Record web Bitstar
@@ -560,12 +556,26 @@ class ActorWrapper(object):
                 self.pb_ompl_setup(custom_init_joint_pose=start_joint,
                                    custom_joint_bound=sub_joint_bounds)
 
+                # Calculte the relationship between the sim_object and gripper
+                pos_orn = pack_pose(sorted_grasp_poses_list[joint_cfg_idx])
+                self.sim_target_object_id, (sim_tar_pos, sim_tar_orn) = self.create_object_bounding(target_pointcloud)
+                (relative_pos,
+                 relative_orn) = self.get_relative_pos_orn(gripper_initial_pos = pos_orn[:3],
+                                                           gripper_initial_orn = ros_quat(pos_orn[3:]),
+                                                           target_pos = sim_tar_pos,
+                                                           target_orn = sim_tar_orn)
+
                 (res, path,
                 elbow_path,
                 gripper_pos_path,
                 gripper_orn_path) = self.pb_ompl_interface.plan(joint_cfg[:6],
                                                                 goal_mat = sorted_grasp_poses_list[joint_cfg_idx],
-                                                                interpolate_num=40)
+                                                                interpolate_num=40,
+                                                                sim_target_object_id=self.sim_target_object_id,
+                                                                relative_pos=relative_pos,
+                                                                relative_orn=relative_orn)
+                # remove sim_target_object after planning
+                p.removeBody(self.sim_target_object_id)
                 if res:
                     path_list.append(path)
                     elbow_path_list.append(elbow_path)
@@ -603,14 +613,28 @@ class ActorWrapper(object):
                                     max(joint_cfg[3], start_state[3]) + 0.02)
             # sub_joint_bounds[4] = (-2., 2)
             self.pb_ompl_setup(custom_init_joint_pose=start_state, custom_joint_bound=sub_joint_bounds)
+            
+            # Calculte the relationship between the sim_object and gripper
+            pos_orn = pack_pose(sorted_grasp_poses_list[joint_cfg_idx])
+            self.sim_target_object_id, (sim_tar_pos, sim_tar_orn) = self.create_object_bounding(target_pointcloud)
+            (relative_pos,
+                relative_orn) = self.get_relative_pos_orn(gripper_initial_pos = pos_orn[:3],
+                                                        gripper_initial_orn = ros_quat(pos_orn[3:]),
+                                                        target_pos = sim_tar_pos,
+                                                        target_orn = sim_tar_orn)
             (res, extend_path,
             extend_elbow_path,
             extend_gripper_pos_path,
             extend_gripper_orn_path) = self.pb_ompl_interface.plan(joint_cfg[:6],
                                                                    goal_mat = sorted_grasp_poses_list[idx],
-                                                                   interpolate_num=extend_length, allowed_time=4)
+                                                                   interpolate_num=extend_length,
+                                                                   allowed_time=4,
+                                                                   sim_target_object_id=self.sim_target_object_id,
+                                                                   relative_pos=relative_pos,
+                                                                   relative_orn=relative_orn)
             print(f"extend_path: {len(extend_path)}\n\n")
 
+            p.removeBody(self.sim_target_object_id)
             if res:
                 path = copy.deepcopy(path_list[path_idx][:-len(extend_path)]) if extend_length < 40 else []
                 path.extend(extend_path)
@@ -690,10 +714,15 @@ class ActorWrapper(object):
                     first3 = []
                     for i in range(1, 5):
                         first3.append(p.getLinkState(self.env._panda.pandaUid, i)[4:5][0])
+                    
+                    # eleminate ik error
+                    pos, orn = p.getLinkState(self.env._panda.pandaUid, self.env._panda.pandaEndEffectorIndex)[4:6]
+                    grasp_array = self.pos_orn2matrix_single(pos, orn)
+                    
                     valid_first3_list.append(first3)
                     valid_elbow_list.append(elbow_pos)
                     valid_score_list.append(score_list[idx])
-                    valid_grasp_list.append(grasp_poses_list[idx])
+                    valid_grasp_list.append(grasp_array)
                 # time.sleep(0.05)
 
             return valid_joint_list, valid_grasp_list, valid_elbow_list, valid_first3_list, valid_score_list
@@ -827,6 +856,11 @@ class ActorWrapper(object):
         all_mat_list = np.array(all_mat_list)
         return all_mat_list
 
+    def pos_orn2matrix_single(self, pos, orn):
+        mat = np.eye(4)
+        mat[:3, :3] = quat2mat(tf_quat(orn))
+        mat[:3, 3] = pos
+        return mat
     
     def dbscan_grouping(self, elbow_pos_list, first3_list, grasp_joint_list,
                         grasp_score_list, grasp_poses_list, pointcloud=None):
@@ -1062,8 +1096,111 @@ class ActorWrapper(object):
         #     self.cart_planner.show_path(gripper_pos_path, gripper_ori_path)
         return joint_paths, None, gripper_pos_paths, gripper_ori_paths
     
-    # def create_approach_waypoint(self, grasp_list, joint_list):
 
+    def create_object_bounding(self, target_pointcloud):
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(target_pointcloud)
+        # self.get_oriented_bound_box_numpy(pcd)
+        # Get AABB from point cloud
+        # aabb = pcd.get_oriented_bounding_box()
+        # aabb = pcd.get_minimal_oriented_bounding_box()
+        aabb = pcd.get_axis_aligned_bounding_box()
+        # Box or sphere
+        max_bound = aabb.get_max_bound()
+        min_bound = aabb.get_min_bound()
+        bound_dimension = np.array([max_bound[i] - min_bound[i] for i in range(3)])
+        print(f"bound_dimension: {bound_dimension}")
+        center = aabb.get_center()
+        if max(bound_dimension) - min(bound_dimension) > 0.04:
+            box_collision_shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=bound_dimension/2)
+            # Create the visual shape for the box
+            box_visual_shape = p.createVisualShape(p.GEOM_BOX, halfExtents=bound_dimension/2,
+                                                rgbaColor=[1, 0, 0, 1])
+            # Create the box multi-body
+            box_id = p.createMultiBody(baseMass=1, baseCollisionShapeIndex=box_collision_shape,
+                                    baseVisualShapeIndex=box_visual_shape,
+                                    basePosition=center)
+            # time.sleep(5)
+            # p.removeBody(box_id)
+            # p.resetBasePositionAndOrientation(box_id, [0, 0, -5])
+            return box_id, p.getBasePositionAndOrientation(box_id)
+        else:
+            radius = max(bound_dimension) / 2
+            sphere_visual_shape = p.createVisualShape(p.GEOM_SPHERE, radius=radius, rgbaColor=[0, 0, 1, 0.5])
+            # Create a multi-body for the sphere in PyBullet
+            sphere_id = p.createMultiBody(baseVisualShapeIndex=sphere_visual_shape, basePosition=center)
+            # time.sleep(5)
+            # p.removeBody(sphere_id)
+            # p.resetBasePositionAndOrientation(box_id, [0, 0, -5])
+            
+            return sphere_id, p.getBasePositionAndOrientation(sphere_id)
+
+    def object_collision_check(self, target_pointcloud, gripper_pos_list, gripper_orn_list):
+        self.sim_target_object_id, (target_pos, target_orn) = self.create_object_bounding(target_pointcloud)
+        for gripper_pos_path, gripper_orn_path in zip(gripper_pos_list, gripper_orn_list):
+            gripper_initial_pos = gripper_pos_path[-1]
+            gripper_initial_orn = gripper_orn_path[-1]
+            if gripper_initial_pos[0] == None:
+                return
+            (relative_pos,
+             relative_orn) = self.get_relative_pos_orn(gripper_initial_pos,
+                                                       gripper_initial_orn,
+                                                       target_pos, target_orn)
+            for waypoint_pos, waypoint_orn in zip(gripper_pos_path, gripper_orn_path):
+                target_pos, target_orn = self.get_target_pose(relative_pos,
+                                                              relative_orn,
+                                                              waypoint_pos,
+                                                              waypoint_orn)
+                p.resetBasePositionAndOrientation(self.sim_target_object_id, target_pos, target_orn)
+                time.sleep(0.05)
+        p.resetBasePositionAndOrientation(self.sim_target_object_id, [0, 0, 15], [1, 0, 0, 0])
+
+    def get_target_pose(self, relative_pos, relative_orn, gripper_pos, gripper_orn):
+        target_pos, target_orn = p.multiplyTransforms(
+            gripper_pos, gripper_orn,
+            relative_pos, relative_orn
+        )
+        return target_pos, target_orn
+
+    def get_relative_pos_orn(self, gripper_initial_pos, gripper_initial_orn, target_pos, target_orn):
+        return p.multiplyTransforms(*p.invertTransform(gripper_initial_pos, gripper_initial_orn),
+                                    target_pos, target_orn)
+
+    def get_oriented_bound_box_numpy(self, pcd):
+        points = np.asarray(pcd.points)
+
+        # Compute the covariance matrix and perform PCA
+        cov = np.cov(points.T)
+        eigenvalues, eigenvectors = np.linalg.eigh(cov)
+
+        # Sort eigenvalues and eigenvectors in descending order
+        sort_idx = np.argsort(eigenvalues)[::-1]
+        eigenvalues = eigenvalues[sort_idx]
+        eigenvectors = eigenvectors[:, sort_idx]
+
+        # Transform points to the PCA-aligned coordinate system
+        transformed_points = points @ eigenvectors
+
+        # Compute the axis-aligned bounding box (AABB) in the PCA-aligned coordinate system
+        min_bound = np.min(transformed_points, axis=0)
+        max_bound = np.max(transformed_points, axis=0)
+        aabb_center = (min_bound + max_bound) / 2.0
+        aabb_extents = max_bound - min_bound
+
+        # Compute the transformation matrix for the OBB
+        rotation_matrix = eigenvectors
+        translation = aabb_center @ eigenvectors.T
+
+        # Create the oriented bounding box
+        obb_center = translation
+        obb_extents = aabb_extents
+        obb = o3d.geometry.OrientedBoundingBox(obb_center, rotation_matrix, obb_extents)
+
+        # Visualize the point cloud and the oriented bounding box
+        pcd.paint_uniform_color([0.5, 0.5, 0.5])  # Set point cloud color
+        obb.color = (1, 0, 0)  # Set OBB color
+        axis_pcd = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
+        o3d.visualization.draw_geometries([pcd, obb] + [axis_pcd])
 
 @ray.remote(num_cpus=1, num_gpus=0.12)
 class ActorWrapper012(ActorWrapper):

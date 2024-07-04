@@ -29,6 +29,7 @@ class ros_node(object):
 
         self.simulation_client = rospy.ServiceProxy("simulation_data", path_planning)
         self.object_num = 1
+        self.redundent = False
     def get_env_callback(self, msg):
         for _ in range(msg.data):
             # self.actor.env.reset(save=False, enforce_face_target=False,
@@ -156,12 +157,15 @@ class ros_node(object):
                     for idx, joint_path in enumerate(joint_path_list):
                         # if idx != 0 and idx != len(joint_path_list) - 1:
                         #     continue
-                        joint_path = joint_path.tolist()
+                        joint_path = joint_path
+
+                        # if not self.redundent:
+                        #     joint_path = self.remove_redundent(joint_path)
                         retreat_joint_path = copy.deepcopy(joint_path)
-                        retreat_joint_path.reverse()
+                        retreat_joint_path = np.flip(retreat_joint_path, axis=0)
                         # Forward part
                         for idx, waypoint in enumerate(joint_path):
-                            waypoint.extend([0, 0, 0])
+                            waypoint = np.append(waypoint, [0, 0, 0])
                             self.actor.env.move(waypoint, obs=False, config=True, repeat=120)
                         
                         # Pregrasp to grasp
@@ -174,7 +178,7 @@ class ros_node(object):
                         
                         # Backward part
                         for waypoint in retreat_joint_path:
-                            waypoint.extend([0, 0, 0.8])
+                            waypoint = np.append(waypoint, [0, 0, 0.8])
                             self.actor.env.move(waypoint, obs=False, config=True, repeat=120)
 
                         self.actor.replace_target_object()
@@ -282,6 +286,46 @@ class ros_node(object):
         point_cloud = self.actor.get_world_pointcloud(raw_data=True)
         print(f"point_cloud: {point_cloud}")
 
+    def remove_redundent(self, joint_path, tolerance=3e-2):
+        """
+        Remove redundant waypoints that lie approximately in the middle of the previous and next waypoints.
+
+        Parameters:
+        - waypoints: An Nx6 numpy array of waypoints.
+        - tolerance: The tolerance threshold for determining redundancy.
+
+        Returns:
+        - A numpy array of waypoints with redundancies removed.
+        """
+        def is_redundant(prev, curr, next_):
+            # Calculate vectors
+            vec_prev_curr = curr - prev
+            vec_prev_next = next_ - prev
+
+            # Check if curr lies on the line segment between prev and next_
+            # if np.linalg.norm(np.cross(vec_prev_next, vec_prev_curr)) / np.linalg.norm(vec_prev_next) < tolerance:
+            #     return True
+            # return False
+            proj_vec = vec_prev_next * np.dot(vec_prev_curr, vec_prev_next)/(np.linalg.norm(vec_prev_curr)*
+                                                                             np.linalg.norm(vec_prev_next))
+            offset_vec = vec_prev_curr - proj_vec
+            for i in offset_vec:
+                if np.abs(i) > tolerance:
+                    print(f"offset_vec1: {offset_vec}")
+                    return False
+            print(f"offset_vec2: {offset_vec}")
+            return True
+        joint_path = np.array(joint_path)
+        if len(joint_path) < 3:
+            return joint_path
+
+        cleaned_waypoints = [joint_path[0]]
+        for i in range(1, len(joint_path) - 1):
+            if not is_redundant(joint_path[i-1], joint_path[i], joint_path[i+1]):
+                cleaned_waypoints.append(joint_path[i])
+        cleaned_waypoints.append(joint_path[-1])
+        
+        return np.array(cleaned_waypoints)
 
 
 if __name__ == "__main__":
