@@ -120,7 +120,6 @@ class ros_node(object):
 
 
 
-
         path_num = path_list.shape[0]
         path_response = path_planningResponse()
         for _ in range(3):
@@ -286,8 +285,8 @@ class ros_node(object):
         final_score = sum(total_weighted_scores)
 
         max_curvature = np.max(curvatures)
-        print(f"max_cur: {max_curvature}\n")
-        print(f"curvatures: {curvatures}\n")
+        # print(f"max_cur: {max_curvature}\n")
+        # print(f"curvatures: {curvatures}\n")
         # print(f"curvatures: {curvatures}\n\napproach_list: {approach_list}\n\ntotal_weighted_scores: {total_weighted_scores}\n")
         # print(f"moving_list: {moving_list}\n")
         # print(f"final_score: {final_score}")

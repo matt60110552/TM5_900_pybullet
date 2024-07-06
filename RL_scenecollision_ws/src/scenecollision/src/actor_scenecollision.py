@@ -478,39 +478,6 @@ class ActorWrapper(object):
                         basePosition=[0, 0, 0],
                         baseOrientation=[0, 0, 0, 1]
                     )
-
-        # combined_tar_pc = self.extend_obs_pc(obs_pc=target_pc, target_pc=target_pc, scale_factor=-0.002)
-        # tar_alph = alphashape.alphashape(combined_tar_pc, 30)
-
-        # tar_vertices = tar_alph.vertices
-        # tar_faces = np.array(tar_alph.faces).flatten()
-        
-        # tar_visualShapeId = p.createVisualShape(
-        #                     shapeType=p.GEOM_MESH,
-        #                     flags=p.GEOM_FORCE_CONCAVE_TRIMESH,
-        #                     vertices=tar_vertices,
-        #                     indices=tar_faces,
-        #                     meshScale=[1, 1, 1]
-        #                 )
-
-        # tar_collisionShapeId = p.createCollisionShape(
-        #                     shapeType=p.GEOM_MESH,
-        #                     flags=p.GEOM_FORCE_CONCAVE_TRIMESH,
-        #                     vertices=tar_vertices,
-        #                     indices=tar_faces,
-        #                     meshScale=[1, 1, 1]
-        #                 )
-
-        # tar_body_id = p.createMultiBody(
-        #                 baseMass=1,
-        #                 baseInertialFramePosition=[0, 0, 0],
-        #                 baseCollisionShapeIndex=tar_collisionShapeId,
-        #                 baseVisualShapeIndex=tar_visualShapeId,
-        #                 basePosition=[0, 0, 0],
-        #                 baseOrientation=[0, 0, 0, 1]
-        #             )
-
-        # return obs_body_id, tar_body_id
         return obs_body_id
 
     def motion_planning(self, grasp_joint_cfg, start_joint=None, elbow_pos_list=None,
@@ -618,10 +585,10 @@ class ActorWrapper(object):
             pos_orn = pack_pose(sorted_grasp_poses_list[joint_cfg_idx])
             self.sim_target_object_id, (sim_tar_pos, sim_tar_orn) = self.create_object_bounding(target_pointcloud)
             (relative_pos,
-                relative_orn) = self.get_relative_pos_orn(gripper_initial_pos = pos_orn[:3],
-                                                        gripper_initial_orn = ros_quat(pos_orn[3:]),
-                                                        target_pos = sim_tar_pos,
-                                                        target_orn = sim_tar_orn)
+             relative_orn) = self.get_relative_pos_orn(gripper_initial_pos = pos_orn[:3],
+                                                       gripper_initial_orn = ros_quat(pos_orn[3:]),
+                                                       target_pos = sim_tar_pos,
+                                                       target_orn = sim_tar_orn)
             (res, extend_path,
             extend_elbow_path,
             extend_gripper_pos_path,
@@ -758,18 +725,6 @@ class ActorWrapper(object):
                     valid_list.append(0)
             valid_list = np.array(valid_list)
             return mid_joint_list, valid_list
-    
-    # def check_inverse_kinematic(self, pose_orn):
-    #     # This function check wheather the end-effector's pose is close enough to the one
-    #     # before inverse kinematic.
-
-    #     pos, orn = p.getLinkState(self.env._panda.pandaUid, self.env._panda.pandaEndEffectorIndex)[4:6]
-    #     pos = list(pos)
-    #     orn = list(orn)
-    #     pos_error = (np.square(pos - pose_orn[:3])**2).mean()
-    #     orn_error = (np.square(orn - pose_orn[3:])**2).mean()
-    #     print(f"orn_error: {orn_error} pos_error: {pos_error}\n\n")
-    #     return (orn_error < 0.1 and pos_error < 0.01)
 
     def freeze_release(self, option=True, target_ids=None):
         # This function will freeze target or release object, True for freeze
@@ -796,23 +751,6 @@ class ActorWrapper(object):
         else:
             for target_id in target_ids:
                 p.removeConstraint(self.targets_dict[target_id][2])
-        # if option:
-            
-        #     self.target_pos, self.target_ori = p.getBasePositionAndOrientation(self.env._objectUids[self.env.target_idx])
-        #     self.fixed_joint_constraint = p.createConstraint(
-        #         parentBodyUniqueId=self.env._objectUids[self.env.target_idx],
-        #         parentLinkIndex=-1,
-        #         childBodyUniqueId=-1,
-        #         childLinkIndex=-1,
-        #         jointType=p.JOINT_FIXED,
-        #         jointAxis=[0, 0, 0],
-        #         parentFramePosition=[0, 0, 0],
-        #         childFramePosition=self.target_pos,
-        #         childFrameOrientation=self.target_ori
-        #         )
-        # else:
-        #     p.removeConstraint(self.fixed_joint_constraint)
-
 
 
     def replace_target_object(self, placed_object_idx=None):
@@ -1100,15 +1038,13 @@ class ActorWrapper(object):
     def create_object_bounding(self, target_pointcloud):
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(target_pointcloud)
-        # self.get_oriented_bound_box_numpy(pcd)
         # Get AABB from point cloud
         # aabb = pcd.get_oriented_bounding_box()
-        # aabb = pcd.get_minimal_oriented_bounding_box()
         aabb = pcd.get_axis_aligned_bounding_box()
         # Box or sphere
         max_bound = aabb.get_max_bound()
         min_bound = aabb.get_min_bound()
-        bound_dimension = np.array([max_bound[i] - min_bound[i] for i in range(3)])
+        bound_dimension = np.array([max_bound[i] - min_bound[i] - 0.02 for i in range(3)])
         print(f"bound_dimension: {bound_dimension}")
         center = aabb.get_center()
         if max(bound_dimension) - min(bound_dimension) > 0.04:
@@ -1120,18 +1056,12 @@ class ActorWrapper(object):
             box_id = p.createMultiBody(baseMass=1, baseCollisionShapeIndex=box_collision_shape,
                                     baseVisualShapeIndex=box_visual_shape,
                                     basePosition=center)
-            # time.sleep(5)
-            # p.removeBody(box_id)
-            # p.resetBasePositionAndOrientation(box_id, [0, 0, -5])
             return box_id, p.getBasePositionAndOrientation(box_id)
         else:
-            radius = max(bound_dimension) / 2
+            radius = max(bound_dimension) / 2 - 0.01
             sphere_visual_shape = p.createVisualShape(p.GEOM_SPHERE, radius=radius, rgbaColor=[0, 0, 1, 0.5])
             # Create a multi-body for the sphere in PyBullet
             sphere_id = p.createMultiBody(baseVisualShapeIndex=sphere_visual_shape, basePosition=center)
-            # time.sleep(5)
-            # p.removeBody(sphere_id)
-            # p.resetBasePositionAndOrientation(box_id, [0, 0, -5])
             
             return sphere_id, p.getBasePositionAndOrientation(sphere_id)
 
