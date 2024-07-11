@@ -544,12 +544,12 @@ class ActorWrapper(object):
         for joint_cfg_idx, joint_cfg in enumerate(sorted_grasp_joint_cfg):
             if len(path_list) == 0:
                 sub_joint_bounds = copy.deepcopy(self.joint_bounds)
-                # sub_joint_bounds[1] = (min(joint_cfg[1], start_joint[1]) - 0.02,
-                #                        max(joint_cfg[1], start_joint[1]) + 0.02)
-                # sub_joint_bounds[2] = (min(joint_cfg[2], start_joint[2]) - 0.02,
-                #                        max(joint_cfg[2], start_joint[2]) + 0.02)
-                # sub_joint_bounds[3] = (min(joint_cfg[3], start_joint[3]) - 0.02,
-                #                        max(joint_cfg[3], start_joint[3]) + 0.02)
+                sub_joint_bounds[1] = (min(joint_cfg[1], start_joint[1]) - 0.04,
+                                       max(joint_cfg[1], start_joint[1]) + 0.04)
+                sub_joint_bounds[2] = (min(joint_cfg[2], start_joint[2]) - 0.04,
+                                       max(joint_cfg[2], start_joint[2]) + 0.04)
+                sub_joint_bounds[3] = (min(joint_cfg[3], start_joint[3]) - 0.04,
+                                       max(joint_cfg[3], start_joint[3]) + 0.04)
                 self.pb_ompl_setup(custom_init_joint_pose=start_joint,
                                    custom_joint_bound=sub_joint_bounds)
 
@@ -589,10 +589,10 @@ class ActorWrapper(object):
                     np.delete(sorted_grasp_poses_list, joint_cfg_idx)
                     break
         
-        for idx, joint_cfg in enumerate(remain_grasp_joint_cfg):
+        for joint_cfg_idx, joint_cfg in enumerate(remain_grasp_joint_cfg):
             
             print(f"web RRT2!!!!!!!!!!!!!!!")
-            path_idx, waypoint_idx = self.select_pre_waypoint(grasp_pose_mat=sorted_grasp_poses_list[idx])
+            path_idx, waypoint_idx = self.select_pre_waypoint(grasp_pose_mat=sorted_grasp_poses_list[joint_cfg_idx])
             if path_idx == 0 and waypoint_idx == 0:
                 start_state = start_joint
             else:
@@ -649,7 +649,7 @@ class ActorWrapper(object):
                 gripper_orn_list.append(gripper_orn_path)
 
                 file.write(f"Path {len(path_list) - 1}:\n")
-                new_start_idx = 39 - extend_length # The maximum idx is 39, be careful
+                new_start_idx = waypoint_num - 1 - extend_length # The maximum idx is waypoint_num - 1 , be careful
                 for idx, gripper_pos in enumerate(extend_gripper_pos_path[:-1]):
                     self.cfg_pool.append({"pos": gripper_pos, "orn": extend_gripper_orn_path[idx],
                                             "path_num":len(path_list)-1, "waypoint_num":idx + new_start_idx})
@@ -691,7 +691,6 @@ class ActorWrapper(object):
                 grasp_joint_list.append(new_joint_cfg[:6])
                 score_list.append(grasp_scores[idx])
                 grasp_poses_list.append(new_grasp_array)
-
             grasp_joint_list = np.array(grasp_joint_list)
             self.robot = pb_ompl.PbOMPLRobot(self.env._panda.pandaUid, self.joint_idx, self.init_joint_pose)
             # self.obstacles = [self.env.plane_id, self.sim_furniture_id, self.sim_target_id]
@@ -703,7 +702,7 @@ class ActorWrapper(object):
             valid_score_list = []
             valid_grasp_list = []
             for idx, grasp_joint in enumerate(grasp_joint_list):
-                if self.pb_ompl_interface.is_state_valid(grasp_joint):
+                if self.pb_ompl_interface.is_state_valid_new(grasp_joint):
                     valid_joint_list.append(grasp_joint)
                     elbow_pos, _ = p.getLinkState(self.env._panda.pandaUid, 5)[4:6]
 
@@ -715,7 +714,6 @@ class ActorWrapper(object):
                     valid_score_list.append(score_list[idx])
                     valid_grasp_list.append(grasp_array)
                 # time.sleep(0.05)
-
             return valid_joint_list, valid_grasp_list, valid_elbow_list, valid_score_list
         else:
             """
