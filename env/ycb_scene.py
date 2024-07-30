@@ -180,13 +180,13 @@ class SimulatedYCBEnv():
             self.ypos = 0.
         elif self.furniture_name == "shelf_2":
             furniture_file = os.path.join(self.root_dir,  'data/objects/shelf_2/model.urdf')
-            self.furniture_pos = np.array([0.85, 0.0, 0.01])
+            self.furniture_pos = np.array([1.05, 0.0, 0.01])
             self.furniture_id = p.loadURDF(furniture_file, [self.furniture_pos[0], self.furniture_pos[1], self.furniture_pos[2]],
                                            [0., 0., 0., 1.], useFixedBase=True)
             # shelf_2 has three plate, 2 different furniture_z
             # self.furniture_z = 0.73
             self.furniture_z = 0.33
-            self.xpos = 0.6
+            self.xpos = 0.8
             self.ypos = 0.
         elif self.furniture_name == "shelf_3":
             furniture_file = os.path.join(self.root_dir,  'data/objects/shelf_3/model.urdf')
