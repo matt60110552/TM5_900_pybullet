@@ -38,9 +38,9 @@ class ActorWrapper(object):
         # self.furniture_name = "carton_box"
         # self.furniture_name = "table"
         # self.furniture_name = "shelf"
-        # self.furniture_name = "shelf_2"
+        self.furniture_name = "shelf_2"
         # self.furniture_name = "shelf_3"
-        self.furniture_name = "shelf_4"
+        # self.furniture_name = "shelf_4"
         # self.furniture_name = "shelf_5"
         self.env = SimulatedYCBEnv(renders=renders)
         self.env._load_index_objs(test_file_dir)
@@ -65,8 +65,8 @@ class ActorWrapper(object):
         if self.furniture_name == "shelf":
             self.init_joint_pose = [-0.15, -1.55, 1.8, -0.1, 1.8, 0.0, 0.0, 0.0, 0.0]
         elif self.furniture_name == "shelf_2":
-            self.init_joint_pose = [-0.16361913, -1.5037375, 1.80286642, -0.14974172, 1.81350627, -0.00209805, 0.0, 0.0, 0.0]
-            # self.init_joint_pose = [-0.163, -1.755, 2.506, -0.508, 1.832, -0.016, 0.0, 0.0, 0.0]
+            # self.init_joint_pose = [-0.16361913, -1.5037375, 1.80286642, -0.14974172, 1.81350627, -0.00209805, 0.0, 0.0, 0.0]
+            self.init_joint_pose = [-0.163, -1.755, 2.506, -0.508, 1.832, -0.016, 0.0, 0.0, 0.0]
         elif self.furniture_name == "shelf_3":
             self.init_joint_pose = [-0.15, -1.55, 1.8, -0.1, 1.8, 0.0, 0.0, 0.0, 0.0]
         elif self.furniture_name == "shelf_4":
@@ -481,7 +481,7 @@ class ActorWrapper(object):
         return obs_body_id
 
     def motion_planning(self, grasp_joint_cfg, start_joint=None, elbow_pos_list=None,
-                        grasp_poses_list=None, cart=False, sim_object=False, target_pointcloud=None):
+                        grasp_poses_list=None, cart=False, waypoint_num=40, target_pointcloud=None):
         if cart:
             return self.cartesian_motion_planning(grasp_poses_list)
         # Record web Bitstar
@@ -513,13 +513,20 @@ class ActorWrapper(object):
         for joint_cfg_idx, joint_cfg in enumerate(sorted_grasp_joint_cfg):
             if len(path_list) == 0:
                 sub_joint_bounds = copy.deepcopy(self.joint_bounds)
+                sub_joint_bounds[0] = (min(joint_cfg[0], start_joint[0]) - 0.03,
+                                       max(joint_cfg[0], start_joint[0]) + 0.03)
                 sub_joint_bounds[1] = (min(joint_cfg[1], start_joint[1]) - 0.02,
                                        max(joint_cfg[1], start_joint[1]) + 0.02)
                 sub_joint_bounds[2] = (min(joint_cfg[2], start_joint[2]) - 0.02,
                                        max(joint_cfg[2], start_joint[2]) + 0.02)
                 sub_joint_bounds[3] = (min(joint_cfg[3], start_joint[3]) - 0.02,
                                        max(joint_cfg[3], start_joint[3]) + 0.02)
-                print(f"self.joint_bounds: {sub_joint_bounds}")
+                
+                sub_joint_bounds[4] = (min(joint_cfg[4], start_joint[4]) - 0.02,
+                                       max(joint_cfg[4], start_joint[4]) + 0.02)
+                sub_joint_bounds[5] = (min(joint_cfg[5], start_joint[5]) - 0.02,
+                                       max(joint_cfg[5], start_joint[5]) + 0.02)
+
                 self.pb_ompl_setup(custom_init_joint_pose=start_joint,
                                    custom_joint_bound=sub_joint_bounds)
 
@@ -537,7 +544,8 @@ class ActorWrapper(object):
                 gripper_pos_path,
                 gripper_orn_path) = self.pb_ompl_interface.plan(joint_cfg[:6],
                                                                 goal_mat = sorted_grasp_poses_list[joint_cfg_idx],
-                                                                interpolate_num=40,
+                                                                interpolate_num=waypoint_num,
+                                                                allowed_time=4,
                                                                 sim_target_object_id=self.sim_target_object_id,
                                                                 relative_pos=relative_pos,
                                                                 relative_orn=relative_orn)
@@ -569,15 +577,24 @@ class ActorWrapper(object):
                 start_state = self.init_joint_pose
             else:
                 start_state = path_list[path_idx][waypoint_idx][:6]
-            extend_length = 40 - waypoint_idx
+            extend_length = waypoint_num - waypoint_idx
             # Planning in new configuration subspace
             sub_joint_bounds = copy.deepcopy(self.joint_bounds)
+            sub_joint_bounds[0] = (min(joint_cfg[0], start_state[0]) - 0.03,
+                                   max(joint_cfg[0], start_state[0]) + 0.03)
             sub_joint_bounds[1] = (min(joint_cfg[1], start_state[1]) - 0.02,
                                     max(joint_cfg[1], start_state[1]) + 0.02)
             sub_joint_bounds[2] = (min(joint_cfg[2], start_state[2]) - 0.02,
                                     max(joint_cfg[2], start_state[2]) + 0.02)
             sub_joint_bounds[3] = (min(joint_cfg[3], start_state[3]) - 0.02,
                                     max(joint_cfg[3], start_state[3]) + 0.02)
+            
+
+            sub_joint_bounds[4] = (min(joint_cfg[4], start_state[4]) - 0.02,
+                                   max(joint_cfg[4], start_state[4]) + 0.02)
+            sub_joint_bounds[5] = (min(joint_cfg[5], start_state[5]) - 0.02,
+                                   max(joint_cfg[5], start_state[5]) + 0.02)
+
             # sub_joint_bounds[4] = (-2., 2)
             self.pb_ompl_setup(custom_init_joint_pose=start_state, custom_joint_bound=sub_joint_bounds)
             
@@ -595,7 +612,7 @@ class ActorWrapper(object):
             extend_gripper_orn_path) = self.pb_ompl_interface.plan(joint_cfg[:6],
                                                                    goal_mat = sorted_grasp_poses_list[idx],
                                                                    interpolate_num=extend_length,
-                                                                   allowed_time=4,
+                                                                   allowed_time=2,
                                                                    sim_target_object_id=self.sim_target_object_id,
                                                                    relative_pos=relative_pos,
                                                                    relative_orn=relative_orn)
@@ -603,24 +620,24 @@ class ActorWrapper(object):
 
             p.removeBody(self.sim_target_object_id)
             if res:
-                path = copy.deepcopy(path_list[path_idx][:-len(extend_path)]) if extend_length < 40 else []
+                path = copy.deepcopy(path_list[path_idx][:-len(extend_path)]) if extend_length < waypoint_num else []
                 path.extend(extend_path)
                 path_list.append(path)
 
-                elbow_path = copy.deepcopy(elbow_path_list[path_idx][:-len(extend_elbow_path)]) if extend_length < 40 else []
+                elbow_path = copy.deepcopy(elbow_path_list[path_idx][:-len(extend_elbow_path)]) if extend_length < waypoint_num else []
                 elbow_path.extend(extend_elbow_path)
                 elbow_path_list.append(elbow_path)
 
-                gripper_pos_path = copy.deepcopy(gripper_pos_list[path_idx][:-len(extend_gripper_pos_path)]) if extend_length < 40 else []
+                gripper_pos_path = copy.deepcopy(gripper_pos_list[path_idx][:-len(extend_gripper_pos_path)]) if extend_length < waypoint_num else []
                 gripper_pos_path.extend(extend_gripper_pos_path)
                 gripper_pos_list.append(gripper_pos_path)
 
-                gripper_orn_path = copy.deepcopy(gripper_orn_list[path_idx][:-len(extend_gripper_orn_path)]) if extend_length < 40 else []
+                gripper_orn_path = copy.deepcopy(gripper_orn_list[path_idx][:-len(extend_gripper_orn_path)]) if extend_length < waypoint_num else []
                 gripper_orn_path.extend(extend_gripper_orn_path)
                 gripper_orn_list.append(gripper_orn_path)
 
                 file.write(f"Path {len(path_list) - 1}:\n")
-                new_start_idx = 39 - extend_length # The maximum idx is 39, be careful
+                new_start_idx = waypoint_num - 1 - extend_length # The maximum idx is 39, be careful
                 for idx, gripper_pos in enumerate(extend_gripper_pos_path[:-1]):
                     self.cfg_pool.append({"pos": gripper_pos, "orn": extend_gripper_orn_path[idx],
                                             "path_num":len(path_list)-1, "waypoint_num":idx + new_start_idx})
@@ -808,7 +825,7 @@ class ActorWrapper(object):
         highest_joint_cfg_list = []
         highest_elbow_pos_list = []
         highest_grasp_poses_list = []
-        epsilon = 0.03  # Maximum distance between samples for one to be considered as in the neighborhood of the other
+        epsilon = 0.05  # Maximum distance between samples for one to be considered as in the neighborhood of the other
         min_samples = 1  # Minimum number of samples in a neighborhood for a data point to be considered as a core point
         
         # Group poses by gripper's position with dbscan
@@ -1044,26 +1061,19 @@ class ActorWrapper(object):
         # Box or sphere
         max_bound = aabb.get_max_bound()
         min_bound = aabb.get_min_bound()
-        bound_dimension = np.array([max_bound[i] - min_bound[i] - 0.02 for i in range(3)])
+        bound_dimension = np.array([max_bound[i] - min_bound[i] - 0.03 for i in range(3)])
         print(f"bound_dimension: {bound_dimension}")
         center = aabb.get_center()
-        if max(bound_dimension) - min(bound_dimension) > 0.04:
-            box_collision_shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=bound_dimension/2)
-            # Create the visual shape for the box
-            box_visual_shape = p.createVisualShape(p.GEOM_BOX, halfExtents=bound_dimension/2,
-                                                rgbaColor=[1, 0, 0, 1])
-            # Create the box multi-body
-            box_id = p.createMultiBody(baseMass=1, baseCollisionShapeIndex=box_collision_shape,
-                                    baseVisualShapeIndex=box_visual_shape,
-                                    basePosition=center)
-            return box_id, p.getBasePositionAndOrientation(box_id)
-        else:
-            radius = max(bound_dimension) / 2 - 0.01
-            sphere_visual_shape = p.createVisualShape(p.GEOM_SPHERE, radius=radius, rgbaColor=[0, 0, 1, 0.5])
-            # Create a multi-body for the sphere in PyBullet
-            sphere_id = p.createMultiBody(baseVisualShapeIndex=sphere_visual_shape, basePosition=center)
-            
-            return sphere_id, p.getBasePositionAndOrientation(sphere_id)
+
+        box_collision_shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=bound_dimension/2)
+        # Create the visual shape for the box
+        box_visual_shape = p.createVisualShape(p.GEOM_BOX, halfExtents=bound_dimension/2,
+                                            rgbaColor=[1, 0, 0, 1])
+        # Create the box multi-body
+        box_id = p.createMultiBody(baseMass=1, baseCollisionShapeIndex=box_collision_shape,
+                                baseVisualShapeIndex=box_visual_shape,
+                                basePosition=center)
+        return box_id, p.getBasePositionAndOrientation(box_id)
 
     def object_collision_check(self, target_pointcloud, gripper_pos_list, gripper_orn_list):
         self.sim_target_object_id, (target_pos, target_orn) = self.create_object_bounding(target_pointcloud)
