@@ -150,14 +150,16 @@ class ros_node(object):
             gripper_mat_list = np.array(self.actor.pos_orn2matrix(gripper_pos_list, gripper_orn_list))
             score_list = []
             dis_list = []
-
+            mean_curvature_list = []
             for gripper_mat_path in  gripper_mat_list:
-                score, distance = self.path_quality_decision(gripper_mat_path)
+                score, distance, mean_curvature = self.path_quality_decision(gripper_mat_path)
                 score_list.append(score)
                 dis_list.append(distance)
+                mean_curvature_list.append(mean_curvature)
             sorted_indices = np.argsort(score_list)
             print(f"score_list: {score_list}")
             print(f"dis_list: {dis_list}")
+            print(f"mean_curvature_list: {mean_curvature_list}")
             score_list.sort()
             # score_list.sort(reverse=True)
             
@@ -254,6 +256,36 @@ class ros_node(object):
         return curvatures
 
     def path_quality_decision(self, waypoint_mat):
+        # curvatures = self.curvature_decision(waypoint_mat)
+
+        # # Wheather gripper is approaching along the grasp direction
+        # goal_mat = waypoint_mat[-1]
+        # approach_list = []
+        # distance = 0
+        # for idx in range(len(waypoint_mat[:-1])):
+        #     moving_vec = waypoint_mat[idx+1][:3, 3] - waypoint_mat[idx][:3, 3]
+        #     distance += np.linalg.norm(moving_vec)
+        #     moving_vec = moving_vec / np.linalg.norm(moving_vec)
+        #     matrix_diff = waypoint_mat[idx][:3, :2] - goal_mat[:3, :2]
+        #     approach_list.append(-np.linalg.norm(matrix_diff, ord='fro') + np.dot(moving_vec, goal_mat[:3, 2]))
+        # # Make a decision based on the maximum curvature
+
+        # smoothness_weight = lambda idx: 1 / (curvatures[idx] + 1)  # Smaller smoothness scores get higher weight
+        # direction_weight = lambda idx: approach_list[idx]  # Larger direction scores get higher weight
+        # weighted_smoothness = [score * smoothness_weight(idx) for idx, score in enumerate(curvatures)]
+        # weighted_direction = [score * direction_weight(idx) for idx, score in enumerate(approach_list)]
+        # # Combine the weighted scores using a weighted average 
+        # # total_weighted_scores = [(w_smooth + w_dir) / 2 for w_smooth, w_dir in zip(weighted_smoothness, weighted_direction)]
+
+        # # # Use only smoothness to determine
+        # total_weighted_scores = [1 / (curvatures[idx] + 1) for idx in range(len(curvatures))]
+        # final_score = sum(total_weighted_scores)
+
+        # max_curvature = np.max(curvatures)
+        # print(f"max_curvature: {max_curvature}")
+        # return final_score, distance
+    
+
         curvatures = self.curvature_decision(waypoint_mat)
 
         # Wheather gripper is approaching along the grasp direction
@@ -264,35 +296,25 @@ class ros_node(object):
             moving_vec = waypoint_mat[idx+1][:3, 3] - waypoint_mat[idx][:3, 3]
             distance += np.linalg.norm(moving_vec)
             moving_vec = moving_vec / np.linalg.norm(moving_vec)
-            # moving_list.append(np.dot(moving_vec, goal_mat[:3, 2]))
-            # approach_list.append(np.dot(moving_vec, goal_mat[:3, 2]))
-
-            # matrix_diff = waypoint_mat[idx][:3, :3] - goal_mat[:3, :3]
-            matrix_diff = waypoint_mat[idx][:3, :2] - goal_mat[:3, :2]
-            approach_list.append(-np.linalg.norm(matrix_diff, ord='fro') + np.dot(moving_vec, goal_mat[:3, 2]))
+            matrix_diff = np.linalg.norm(waypoint_mat[idx][:3, :2] - goal_mat[:3, :2], ord='fro')
+            toward_goal_dot = np.dot(moving_vec, goal_mat[:3, 2])
+            # print(f"matrix_diff: {matrix_diff}, toward_goal_dot: {toward_goal_dot}")
+            alpha = idx / len(waypoint_mat)
+            # approach_list.append(-matrix_diff * (1 - alpha) + toward_goal_dot * alpha)
+            approach_list.append(-matrix_diff)
         # Make a decision based on the maximum curvature
+        # print(f"curvatures: {curvatures}")
 
-        smoothness_weight = lambda idx: 1 / (curvatures[idx] + 1)  # Smaller smoothness scores get higher weight
-        direction_weight = lambda idx: approach_list[idx]  # Larger direction scores get higher weight
-        # Calculate weighted scores for each list
-        weighted_smoothness = [score * smoothness_weight(idx) for idx, score in enumerate(curvatures)]
-        weighted_direction = [score * direction_weight(idx) for idx, score in enumerate(approach_list)]
-        # Combine the weighted scores using a weighted average 
-        total_weighted_scores = [(w_smooth + w_dir) / 2 for w_smooth, w_dir in zip(weighted_smoothness, weighted_direction)]
+        normalized_curvatures = 1 / (curvatures + 1)
 
-        # # Use only smoothness to determine
-        # total_weighted_scores = [1 / (curvatures[idx] + 1) for idx in range(len(curvatures))]
-        final_score = sum(total_weighted_scores)
+        normalized_approach_scores = (np.array(approach_list) - np.min(approach_list)) / (np.max(approach_list) - np.min(approach_list))
 
-        max_curvature = np.max(curvatures)
-        # print(f"max_cur: {max_curvature}\n")
-        # print(f"curvatures: {curvatures}\n")
-        # print(f"curvatures: {curvatures}\n\napproach_list: {approach_list}\n\ntotal_weighted_scores: {total_weighted_scores}\n")
-        # print(f"moving_list: {moving_list}\n")
-        # print(f"final_score: {final_score}")
-        # print(f"============================")
-        # return max_curvature
-        return final_score, distance
+        # 计算最终得分：曲率和接近得分的平均值
+        final_score = (np.mean(normalized_curvatures) + np.mean(normalized_approach_scores)) / 2
+
+        return final_score, distance, np.mean(curvatures)
+
+
 
     # Function to evaluate grip pose consistency
     def evaluate_grip_pose(self, grip_pose, target_pose):
