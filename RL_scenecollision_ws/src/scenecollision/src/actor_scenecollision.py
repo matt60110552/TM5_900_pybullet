@@ -51,7 +51,7 @@ class ActorWrapper(object):
         self.simulation_id = simulation_id
         self.sim_furniture_id = None
         self.joint_bounds = list(zip(self.env._panda._joint_min_limit, self.env._panda._joint_max_limit))[:6]
-        self.joint_bounds[0] = (-2, 2)
+        # self.joint_bounds[0] = (-1.57, 1.57)
         # disable the collision between the basse of TM5 and plane        
         p.setCollisionFilterPair(self.env.plane_id, self.env._panda.pandaUid, -1, 0, enableCollision=False)
         
@@ -447,75 +447,87 @@ class ActorWrapper(object):
 
         return combined_pc
 
+    def remove_reduntant_points(self, obs_pc):
+        # This function is for removing the points that is outside the predefined workspace
+        obs_pc = [point for point in obs_pc if -0.5 <= point[1] <= 0.5 and 0. <= point[0] <= 1.3]
+        return obs_pc
 
+    def create_obstacle_from_pc(self, obs_pc, target_pc, voxel=False):
+        if voxel:
+            # This function use voxel to represent obstacle
+            x_min, y_min, z_min = 0.7, -0.6, 0.1  # 空間範圍的最小值
+            x_max, y_max, z_max = 1.1, 0.6, 0.6    # 空間範圍的最大值
+            voxel_size = 0.05  # 體素的大小
 
-    def create_obstacle_from_pc(self, obs_pc, target_pc):
-        # This function use the 2 pointcloud to create a object in pybullet
-        combined_obs_pc = self.extend_obs_pc(obs_pc=obs_pc, target_pc=target_pc)
-        obs_alph = alphashape.alphashape(combined_obs_pc, 16)
+            x_range = np.arange(x_min, x_max, voxel_size)
+            y_range = np.arange(y_min, y_max, voxel_size)
+            z_range = np.arange(z_min, z_max, voxel_size)
 
-        obs_vertices = obs_alph.vertices
-        obs_faces = np.array(obs_alph.faces).flatten()
+            # 創建體素網格
+            voxels = np.zeros((len(x_range), len(y_range), len(z_range)))
 
-        obs_visualShapeId = p.createVisualShape(
-                            shapeType=p.GEOM_MESH,
-                            flags=p.GEOM_FORCE_CONCAVE_TRIMESH,
-                            vertices=obs_vertices,
-                            indices=obs_faces,
-                            meshScale=[1, 1, 1]
+            # 將點雲數據映射到體素網格
+            for point in obs_pc:
+                x, y, z = point
+                x_idx = np.digitize(x, x_range) - 1
+                y_idx = np.digitize(y, y_range) - 1
+                z_idx = np.digitize(z, z_range) - 1
+                if (0 <= x_idx < len(x_range)) and (0 <= y_idx < len(y_range)) and (0 <= z_idx < len(z_range)):
+                    voxels[x_idx, y_idx, z_idx] = 1
+
+            # 創建方塊的碰撞形狀
+            box_id = p.createCollisionShape(shapeType=p.GEOM_BOX, halfExtents=[voxel_size / 2] * 3)
+
+            # 遍歷體素網格並在 PyBullet 中創建方塊
+            obs_ids = []
+            for x in range(voxels.shape[0]):
+                for y in range(voxels.shape[1]):
+                    for z in range(voxels.shape[2]):
+                        if voxels[x, y, z] > 0:
+                            # 計算方塊的位置
+                            position = [x_range[x] + voxel_size / 2, y_range[y] + voxel_size / 2, z_range[z] + voxel_size / 2]
+                            obs_ids.append(p.createMultiBody(
+                                baseCollisionShapeIndex=box_id,
+                                basePosition=position,
+                                baseOrientation=p.getQuaternionFromEuler([0, 0, 0])
+                                )
+                            )
+            return obs_ids
+        else:
+            # This function use the 2 pointcloud to create a object in pybullet
+            combined_obs_pc = self.extend_obs_pc(obs_pc=obs_pc, target_pc=target_pc)
+            obs_alph = alphashape.alphashape(combined_obs_pc, 20)
+
+            obs_vertices = obs_alph.vertices
+            obs_faces = np.array(obs_alph.faces).flatten()
+
+            obs_visualShapeId = p.createVisualShape(
+                                shapeType=p.GEOM_MESH,
+                                flags=p.GEOM_FORCE_CONCAVE_TRIMESH,
+                                vertices=obs_vertices,
+                                indices=obs_faces,
+                                meshScale=[1, 1, 1]
+                            )
+
+            obs_collisionShapeId = p.createCollisionShape(
+                                shapeType=p.GEOM_MESH,
+                                flags=p.GEOM_FORCE_CONCAVE_TRIMESH,
+                                vertices=obs_vertices,
+                                indices=obs_faces,
+                                meshScale=[1, 1, 1]
+                            )
+            obs_body_id = p.createMultiBody(
+                            baseMass=1,
+                            baseInertialFramePosition=[0, 0, 0],
+                            baseCollisionShapeIndex=obs_collisionShapeId,
+                            baseVisualShapeIndex=obs_visualShapeId,
+                            basePosition=[0, 0, 0],
+                            baseOrientation=[0, 0, 0, 1]
                         )
+            return obs_body_id
 
-        obs_collisionShapeId = p.createCollisionShape(
-                            shapeType=p.GEOM_MESH,
-                            flags=p.GEOM_FORCE_CONCAVE_TRIMESH,
-                            vertices=obs_vertices,
-                            indices=obs_faces,
-                            meshScale=[1, 1, 1]
-                        )
-        obs_body_id = p.createMultiBody(
-                        baseMass=1,
-                        baseInertialFramePosition=[0, 0, 0],
-                        baseCollisionShapeIndex=obs_collisionShapeId,
-                        baseVisualShapeIndex=obs_visualShapeId,
-                        basePosition=[0, 0, 0],
-                        baseOrientation=[0, 0, 0, 1]
-                    )
-
-        # combined_tar_pc = self.extend_obs_pc(obs_pc=target_pc, target_pc=target_pc, scale_factor=-0.002)
-        # tar_alph = alphashape.alphashape(combined_tar_pc, 30)
-
-        # tar_vertices = tar_alph.vertices
-        # tar_faces = np.array(tar_alph.faces).flatten()
-        
-        # tar_visualShapeId = p.createVisualShape(
-        #                     shapeType=p.GEOM_MESH,
-        #                     flags=p.GEOM_FORCE_CONCAVE_TRIMESH,
-        #                     vertices=tar_vertices,
-        #                     indices=tar_faces,
-        #                     meshScale=[1, 1, 1]
-        #                 )
-
-        # tar_collisionShapeId = p.createCollisionShape(
-        #                     shapeType=p.GEOM_MESH,
-        #                     flags=p.GEOM_FORCE_CONCAVE_TRIMESH,
-        #                     vertices=tar_vertices,
-        #                     indices=tar_faces,
-        #                     meshScale=[1, 1, 1]
-        #                 )
-
-        # tar_body_id = p.createMultiBody(
-        #                 baseMass=1,
-        #                 baseInertialFramePosition=[0, 0, 0],
-        #                 baseCollisionShapeIndex=tar_collisionShapeId,
-        #                 baseVisualShapeIndex=tar_visualShapeId,
-        #                 basePosition=[0, 0, 0],
-        #                 baseOrientation=[0, 0, 0, 1]
-        #             )
-
-        # return obs_body_id, tar_body_id
-        return obs_body_id
-
-    def motion_planning(self, grasp_joint_cfg, start_joint=None, elbow_pos_list=None, grasp_poses_list=None, waypoint_num=40, target_pointcloud=None):
+    def motion_planning(self, grasp_joint_cfg, start_joint=None, elbow_pos_list=None, grasp_poses_list=None, waypoint_num=40,
+                        target_pointcloud=None, object_obstacle=None):
 
         # Record web Bitstar
         file = open("/home/user/MATT_TM5_900_pybullet/RL_scenecollision_ws/src/scenecollision/src/path_record.txt", 'w')
@@ -531,7 +543,6 @@ class ActorWrapper(object):
         init_elbow_pos = np.array(init_elbow_pos)
         if start_joint is None:
             start_joint = self.init_joint_pose[:6]
-        print(f"start_joint: {start_joint}???????????????????????????")
         # sort the grasp_joint_cfg according to the elbow's distance
         dis = np.linalg.norm(elbow_pos_list - init_elbow_pos, axis=1)
         sorted_grasp_joint_cfg = grasp_joint_cfg[np.argsort(dis)]
@@ -544,14 +555,17 @@ class ActorWrapper(object):
         for joint_cfg_idx, joint_cfg in enumerate(sorted_grasp_joint_cfg):
             if len(path_list) == 0:
                 sub_joint_bounds = copy.deepcopy(self.joint_bounds)
-                sub_joint_bounds[1] = (min(joint_cfg[1], start_joint[1]) - 0.04,
-                                       max(joint_cfg[1], start_joint[1]) + 0.04)
-                sub_joint_bounds[2] = (min(joint_cfg[2], start_joint[2]) - 0.04,
-                                       max(joint_cfg[2], start_joint[2]) + 0.04)
-                sub_joint_bounds[3] = (min(joint_cfg[3], start_joint[3]) - 0.04,
-                                       max(joint_cfg[3], start_joint[3]) + 0.04)
+                sub_joint_bounds[0] = (min(joint_cfg[0], start_joint[0]) - 0.03,
+                                       max(joint_cfg[0], start_joint[0]) + 0.03)
+                sub_joint_bounds[1] = (min(joint_cfg[1], start_joint[1]) - 0.02,
+                                       max(joint_cfg[1], start_joint[1]) + 0.02)
+                sub_joint_bounds[2] = (min(joint_cfg[2], start_joint[2]) - 0.02,
+                                       max(joint_cfg[2], start_joint[2]) + 0.02)
+                sub_joint_bounds[3] = (min(joint_cfg[3], start_joint[3]) - 0.02,
+                                       max(joint_cfg[3], start_joint[3]) + 0.02)
                 self.pb_ompl_setup(custom_init_joint_pose=start_joint,
-                                   custom_joint_bound=sub_joint_bounds)
+                                   custom_joint_bound=sub_joint_bounds,
+                                   object_obstacle=object_obstacle)
 
                 # Calculte the relationship between the sim_object and gripper
                 pos_orn = pack_pose(sorted_grasp_poses_list[joint_cfg_idx])
@@ -568,9 +582,12 @@ class ActorWrapper(object):
                 gripper_orn_path) = self.pb_ompl_interface.plan(joint_cfg[:6],
                                                                 goal_mat = sorted_grasp_poses_list[joint_cfg_idx],
                                                                 interpolate_num=waypoint_num,
+                                                                allowed_time=5,
                                                                 sim_target_object_id=self.sim_target_object_id,
                                                                 relative_pos=relative_pos,
                                                                 relative_orn=relative_orn)
+                # remove sim_target_object after planning
+                p.removeBody(self.sim_target_object_id)
                 if res:
                     path_list.append(path)
                     elbow_path_list.append(elbow_path)
@@ -600,14 +617,18 @@ class ActorWrapper(object):
             extend_length = waypoint_num - waypoint_idx
             # Planning in new configuration subspace
             sub_joint_bounds = copy.deepcopy(self.joint_bounds)
+            sub_joint_bounds[0] = (min(joint_cfg[0], start_joint[0]) - 0.03,
+                                   max(joint_cfg[0], start_joint[0]) + 0.03)
             sub_joint_bounds[1] = (min(joint_cfg[1], start_state[1]) - 0.02,
-                                    max(joint_cfg[1], start_state[1]) + 0.02)
+                                   max(joint_cfg[1], start_state[1]) + 0.02)
             sub_joint_bounds[2] = (min(joint_cfg[2], start_state[2]) - 0.02,
-                                    max(joint_cfg[2], start_state[2]) + 0.02)
+                                   max(joint_cfg[2], start_state[2]) + 0.02)
             sub_joint_bounds[3] = (min(joint_cfg[3], start_state[3]) - 0.02,
-                                    max(joint_cfg[3], start_state[3]) + 0.02)
+                                   max(joint_cfg[3], start_state[3]) + 0.02)
             # sub_joint_bounds[4] = (-2., 2)
-            self.pb_ompl_setup(custom_init_joint_pose=start_state, custom_joint_bound=sub_joint_bounds)
+            self.pb_ompl_setup(custom_init_joint_pose=start_state,
+                               custom_joint_bound=sub_joint_bounds,
+                               object_obstacle=object_obstacle)
 
 
             # Calculte the relationship between the sim_object and gripper
@@ -625,10 +646,12 @@ class ActorWrapper(object):
             extend_gripper_orn_path) = self.pb_ompl_interface.plan(joint_cfg[:6],
                                                                    goal_mat = sorted_grasp_poses_list[joint_cfg_idx],
                                                                    interpolate_num=extend_length,
-                                                                   allowed_time=4,
+                                                                   allowed_time=1,
                                                                    sim_target_object_id=self.sim_target_object_id,
                                                                    relative_pos=relative_pos,
                                                                    relative_orn=relative_orn)
+            # remove sim_target_object after planning
+            p.removeBody(self.sim_target_object_id)
             print(f"extend_path: {len(extend_path)}\n\n")
 
             if res:
@@ -659,10 +682,14 @@ class ActorWrapper(object):
         path_lengths = [len(path) for path in path_list]
         print(f"path_list lengths: {path_lengths}")
 
+        # Remove the object obstacle
+        for id in self.obstacles[:-2]:
+            p.removeBody(id)
+        self.obstacles = self.obstacles[-2:]
         file.close()  # Close the file after writing
         return path_list, elbow_path_list, gripper_pos_list, gripper_orn_list
     
-    def grasp_pose2grasp_joint(self, grasp_poses, grasp_scores):        
+    def grasp_pose2grasp_joint(self, grasp_poses, grasp_scores, object_obstacle=None):        
         if grasp_scores is not None:
             # This function convert the grasp poses into joint configs
             grasp_joint_list = []
@@ -694,7 +721,11 @@ class ActorWrapper(object):
             grasp_joint_list = np.array(grasp_joint_list)
             self.robot = pb_ompl.PbOMPLRobot(self.env._panda.pandaUid, self.joint_idx, self.init_joint_pose)
             # self.obstacles = [self.env.plane_id, self.sim_furniture_id, self.sim_target_id]
-            self.obstacles = [self.env.plane_id, self.sim_furniture_id]
+            if object_obstacle is None:
+                self.obstacles = [self.env.plane_id, self.sim_furniture_id]
+            else:
+                object_obstacle.extend([self.env.plane_id, self.sim_furniture_id])
+                self.obstacles = object_obstacle
             self.setup_collision_detection(self.obstacles)
             self.pb_ompl_interface = pb_ompl.PbOMPL(self.robot, self.obstacles)
             valid_joint_list = []
@@ -735,7 +766,11 @@ class ActorWrapper(object):
             mid_joint_list = np.array(mid_joint_list)
             self.robot = pb_ompl.PbOMPLRobot(self.env._panda.pandaUid, self.joint_idx, self.init_joint_pose)
             valid_list = []
-            self.obstacles = [self.env.plane_id, self.sim_furniture_id]
+            if object_obstacle is None:
+                self.obstacles = [self.env.plane_id, self.sim_furniture_id]    
+            else:
+                object_obstacle.extend([self.env.plane_id, self.sim_furniture_id])
+                self.obstacles = object_obstacle
             self.setup_collision_detection(self.obstacles)
             self.pb_ompl_interface = pb_ompl.PbOMPL(self.robot, self.obstacles)
             # mid_joint_list contain all joint config and valid_list indicate the config is valid or not, 
@@ -814,7 +849,7 @@ class ActorWrapper(object):
     def clear_constraints(self):
         self.targets_dict.clear()
 
-    def pb_ompl_setup(self, custom_init_joint_pose=None, custom_joint_bound=None):
+    def pb_ompl_setup(self, custom_init_joint_pose=None, custom_joint_bound=None, object_obstacle=None):
         """
         This function set the pb_ompl part up
         """
@@ -822,8 +857,11 @@ class ActorWrapper(object):
             self.robot = pb_ompl.PbOMPLRobot(self.env._panda.pandaUid, self.joint_idx, self.init_joint_pose[:6])
         else:
             self.robot = pb_ompl.PbOMPLRobot(self.env._panda.pandaUid, self.joint_idx, custom_init_joint_pose[:6])
-        # self.obstacles = [self.env.plane_id, self.sim_furniture_id, self.sim_target_id]
-        self.obstacles = [self.env.plane_id, self.sim_furniture_id]
+        if object_obstacle is None:
+            self.obstacles = [self.env.plane_id, self.sim_furniture_id]
+        else:
+            object_obstacle.extend([self.env.plane_id, self.sim_furniture_id])
+            self.obstacles = object_obstacle
         self.setup_collision_detection(self.obstacles)
         if custom_joint_bound is None:
             self.pb_ompl_interface = pb_ompl.PbOMPL(self.robot, self.obstacles, joint_bounds=self.joint_bounds)
@@ -883,7 +921,7 @@ class ActorWrapper(object):
             print(f"tmp_grasp_joint_cfgs_list: {len(tmp_grasp_joint_cfgs_list)}")
 
             # Choose the grasp pose with most "middle" pose
-            if len(tmp_grasp_poses_list) > 1:
+            if len(tmp_grasp_poses_list) >= 1:
                 idx = self.select_representative_grasp_poses(tmp_grasp_poses_list)
                 # Visualize grouped grasp poses
                 # self.visualize_points_grasppose(pointcloud, tmp_grasp_poses_list, repre_idx=idx)
@@ -1002,7 +1040,7 @@ class ActorWrapper(object):
         # Box or sphere
         max_bound = aabb.get_max_bound()
         min_bound = aabb.get_min_bound()
-        bound_dimension = np.array([max_bound[i] - min_bound[i] - 0.02 for i in range(3)])
+        bound_dimension = np.array([max_bound[i] - min_bound[i] - 0.01 for i in range(3)])
         print(f"bound_dimension: {bound_dimension}")
         center = aabb.get_center()
         if max(bound_dimension) - min(bound_dimension) > 0.04:

@@ -19,9 +19,9 @@ import itertools
 from sklearn.cluster import DBSCAN
 from tf.transformations import quaternion_matrix
 from cv_bridge import CvBridge
-from scenecollision.srv import GraspGroup, GraspGroupRequest
+from scenecollision.srv import GraspGroup, GraspGroupRequest, SetPositions, SetPositionsRequest
 from scenecollision.srv import path_planning, path_planningRequest
-from scenecollision.msg import GraspPose, motion_planning, Robotiq2FGripper_robot_output
+from scenecollision.msg import GraspPose, motion_planning, Robotiq2FGripper_robot_output, FeedbackState
 from sensor_msgs.point_cloud2 import create_cloud_xyz32
 from sensor_msgs import point_cloud2
 from sensor_msgs.msg import Image
@@ -31,9 +31,10 @@ class ros_node(object):
     def __init__(self, renders):
         self.actor = ActorWrapper(renders=renders)
         self.start_sub = rospy.Subscriber("test_realworld_cmd", Int32, self.get_env_callback)
-        self.joint_sub = rospy.Subscriber("joint_states", JointState, self.joint_callback)
+        self.state_sub = rospy.Subscriber("feedback_states", FeedbackState, self.state_callback)
         self.tm_pub = rospy.Publisher("/target_position", Pose, queue_size=1)
         self.tm_joint_pub = rospy.Publisher("/target_joint", JointState, queue_size=1)
+        self.position_serivce_client = rospy.ServiceProxy("tm_driver/set_positions", SetPositions)
         self.robotiq_pub = rospy.Publisher("/Robotiq2FGripperRobotOutput", Robotiq2FGripper_robot_output, queue_size=10)
         self.tf_buffer = tf2_ros.Buffer()
         self.listener = tf2_ros.TransformListener(self.tf_buffer)  # Create a tf listener
@@ -43,24 +44,27 @@ class ros_node(object):
         self.seg_pub = rospy.Publisher("/uoais/data_init", Int32, queue_size=1)
         self.depth_topic = rospy.get_param("~depth", "/camera/aligned_depth_to_color/image_raw")
 
+        self.raw_point_sub = rospy.Subscriber("/camera/depth/color/points", PointCloud2, self.raw_points_callback)
         self.contact_client = rospy.ServiceProxy('contact_graspnet/get_grasp_result', GraspGroup)
         # rospy.wait_for_service('contact_graspnet/get_grasp_result', timeout=None)
         self.target_points = None
         self.obs_points = None
-        self.home_joint_point = [-0.0432979892528877, -1.7933704143724325, 2.502642517484129, -0.5873226944246331, 1.6095232164185018, -0.03901780668318279]
+        self.raw_point_flag = False
+        # self.home_joint_point = [-0.0432979892528877, -1.7933704143724325, 2.502642517484129, -0.5873226944246331, 1.6095232164185018, -0.03901780668318279]
         # self.home_joint_point = [0.012591255025137305, -1.2207295273003245, 1.5559966079851082, 0.023707389283668924, 1.5601789693190231, -0.04487435591399763]
+        self.home_joint_point = [-0.030949352364245817, -1.2832006285708581, 1.5177811784488526, 0.0606198176669007, 1.6131496428748628, -0.04860742116607019]
         self.place_joint_point = [-1.002553783421109, -0.3444243268035077, 2.1679726506737955, -0.7325243623262604, 1.320991283913246, 0.6469062632832484]
         rospy.loginfo("Init finished!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 
 
-    def joint_callback(self, msg):
-        cur_states = np.asarray(msg.position)
-        cur_states= np.concatenate((cur_states, [0, 0, 0]))
-        self.joint_states = cur_states
-        
+    def state_callback(self, msg):
+        cur_states = np.asarray(msg.joint_pos)
+        self.joint_states = np.concatenate((cur_states, [0, 0, 0]))
+        quat_pose = pack_pose(self.get_ef_pose())
+        self.ef_state = np.array([*quat_pose[:3], *quat2euler(quat_pose[3:])]) # This pose is a 1d array(x, y, z and euler)
 
     def get_env_callback(self, msg):
-        if msg.data == 0:
+        if msg.data == 1:
             # Pybullet setup
             self.actor.init_joint_pose = self.joint_states
             self.actor.env._panda.reset(self.actor.init_joint_pose)
@@ -82,222 +86,89 @@ class ros_node(object):
             # Reset the arm's position
             self.move_along_path([self.home_joint_point])
             time.sleep(1)
+            # preset_path = [[-0.04429334571030482, -1.0164825153963868, 1.9870293635724874, -0.454464345411846, 1.5577548269367785, -0.04053042392569895],
+            #                [-0.2558065096876577, -0.6813958638754559, 1.8062975314617316, -0.45444493762540206, 1.557638446797142, 0.09980374283969844],
+            #                [-0.2559620382953184, -0.36332364921633675, 1.6246948456745198, -0.45460978729687795, 1.557638446797142, 0.09981343841054201],
+            #                [-0.25613622567536637, -0.06935765718126115, 1.5490602717679425, -0.454784324216819, 1.557638446797142, 0.09982313398138558],
+            #                [-0.31608776017284657, 0.22289133664239152, 1.5281203687488674, -1.1026117416316124, 1.5578614865384361, 0.09981343841054201],
+            #                [-0.33669163884138087, 0.396941796920843, 1.4630926328318576, -1.3589328073313869, 1.816499835281716, -0.1522993750360951],
+            #                [-0.23841888073334172, 0.3606112862251183, 1.4719761392800348, -1.1746744173051482, 1.9454603484335495, -0.13926757907119908],
+            #                [-0.21229079037089926, 0.456762686722098, 1.4191289032407204, -1.323444321593318, 1.8989278668129765, -0.13929666578372976],]
+            preset_paths = [[[-0.030930689430669248, -0.6324430348771916, 1.5178496216888677, 0.06136771618021107, 1.6131690839508204, -0.051138148248566835],
+                            [-0.04447997504607053, -0.40536497597460014, 1.517843363260306, 0.061057432946081625, 1.1995356918713103, 0.1853151822810527],
+                            [-0.08447997504607053, -0.32536497597460014, 1.597843363260306, 0.060557432946081625, 1.1995356918713103, 0.1853151822810527],
+                            [-0.11011126648987635, -0.21128920877443408, 1.6677501710178309, 0.06098955978898743, 1.1995648534852468, 0.18530547838783074],
+                            [-0.11099464534583403, -0.17436772598806397, 1.9675515359918658, -0.8618629777738579, 1.2927944000817595, 0.18530547838783074],
+                            [-0.1439471525806318, 0.023677033408431223, 1.9098767878445648, -1.3827080448050149, 1.6198691977792963, 0.0339563504375949],
+                            [-0.11892638795468746, 0.17923252235131173, 1.742694320411805, -1.4240819833941043, 1.7504197512599615, 0.03397574365987664],
+                            [-0.09733338629016254, 0.22258650456611834, 1.7426445192994207, -1.4241401734639225, 1.7504197512599615, 0.03397574365987664]],
+                           [[-0.23311239910330434, -0.8234518724765088, 1.731359640496319, -0.5721964720652011, 1.7502549015884856, 0.03415997198947208],
+                            [-0.23310617396425629, -0.4219127937239165, 1.792312873103562, -0.5723031316668588, 1.7502743426644432, 0.03415997198947208],
+                            [-0.23326792771096497, -0.12842581698397285, 1.817122082870413, -0.572361321736677, 1.7502549015884856, 0.03415997198947208],
+                            [-0.23316839206522325, -0.03633671919001596, 1.8975157256449622, -1.003835829169873, 1.6157094733146469, 0.03410179440322146],
+                            [-0.23307506491377278, 0.1231877619491937, 1.8983182692394576, -1.4205331880835192, 1.4698581272650948, 0.034111489974065025],
+                            [-0.23307506491377278, 0.2175164117723391, 1.8931361572323269, -1.629895067177063, 1.469664249137737, 0.22577773721084665],
+                            [-0.2515078181483768, 0.3449530974379429, 1.7882940298605778, -1.704692210078865, 1.3716541952264774, 0.22522504806087115]],
+                           [[0.2355136882344447, -0.7850809143325926, 1.7106936435953586, -0.19987897830777365, 1.8082871791121298, -0.24913605681582265],
+                            [0.23648416078042642, -0.5223628691154203, 1.761295035887409, -0.19828878817613052, 1.8085004983154451, -0.24913605681582265],
+                            [0.23650281955281377, -0.3536313407451024, 1.761307419586478, -0.35499028527034254, 2.020558029064367, -0.2491554479575098],
+                            [0.3176616883770834, -0.16276559812010652, 1.7612514932035863, -0.35511631936893057, 2.0205676164442914, -0.24914574406428783],
+                            [0.3110612100628901, -0.06242748784649448, 1.7750993982397802, -0.8037822972974016, 1.8073562711530926, -0.24909727453244837],
+                            [0.2717135542339442, -0.005511784302352675, 1.8766008563401337, -1.1928646064987163, 1.875627737277819, -0.24917483909919694],
+                            [0.4250917092486032, 0.030762725109074712, 1.827131573827476, -1.1927773879730161, 1.548679173415952, 0.07280931785227479]]]
 
+            for i in range(3):
+                preset_path = np.array(preset_paths[i])
+                reverse_path_list = np.flip(preset_path, axis=0)[:-1]
+                
+                self.move_along_path_vel(preset_path)
 
-            # Set init_value to None
-            self.target_points = None
-            self.obs_points = None
+                # Moving forward in cartesian space
+                ef_pose = self.get_ef_pose()
+                forward_mat = np.eye(4)
+                forward_mat[2, 3] = 0.05
+                ef_pose = ef_pose.dot(forward_mat)
+                quat_pose = pack_pose(ef_pose)
+                RT_grasp = [quat_pose[:3], ros_quat(quat_pose[3:])]
             
-            
+                self.set_pose(RT_grasp[0], RT_grasp[1])
 
-            # Segmentation part
-            seg_msg = Int32()
-            seg_msg.data = 2
-            self.seg_pub.publish(seg_msg)    
-            time.sleep(5) # Sleep to wait for the segmentation pointcloud arrive
-            
-            
-            self.target_points = self.remove_outlier_points(self.target_points)
-            self.visual_pc(self.target_points)
-            grasp_poses_camera = self.setting_contact_req(obstacle_points=self.obs_points, target_points=self.target_points)
+                # Close gripper
+                self.control_gripper("set_pose", 0.)
+                time.sleep(1)
 
-            self.obs_points_base = self.pc_cam2base(self.obs_points)
-            self.target_points_base = self.pc_cam2base(self.target_points)
+                self.move_along_path_vel(reverse_path_list)
+                place_path = np.linspace(reverse_path_list[-1], self.place_joint_point, num=8)
+                self.move_along_path(place_path)
+                # Open gripper
+                self.control_gripper("set_pose", 0.085)
+                time.sleep(1)
 
-            
-            self.add_plane_2_obs_pc()
-            # self.visual_pc(self.obs_points_base)
-            self.actor.sim_furniture_id = self.actor.create_obstacle_from_pc(self.obs_points_base, self.target_points_base)
-            
-            self.grasp_list = []
-            self.score_list = []
-            for grasp_pose_cam in grasp_poses_camera:
-                grasp_camera = np.array(grasp_pose_cam.pred_grasps_cam)
-                grasp_world = self.pose_cam2base(grasp_camera.reshape(4,4))
-                if grasp_world[0, 2] >= -0.3:
-                    self.grasp_list.append(grasp_world)
-                    self.score_list.append(grasp_pose_cam.score)
-
-            
-            self.actor.visualize_points_grasppose(self.obs_points_base, self.grasp_list)
-
-
-            self.grasp_list = self.grasp2pre_grasp(self.grasp_list, drawback_dis=0.1) # Drawback a little
-            
-            (grasp_joint_list, grasp_poses_list,
-            elbow_pos_list, grasp_score_list) = self.actor.grasp_pose2grasp_joint(grasp_poses=self.grasp_list,
-                                                                                grasp_scores=self.score_list)
-            
-            grasp_joint_list = np.array(grasp_joint_list)
-            elbow_pos_list = np.array(elbow_pos_list)
-            grasp_poses_list = np.array(grasp_poses_list)
-
-            if len(elbow_pos_list) == 0:
-                print(f"There is no path")
-                path_list = grasp_poses_list = elbow_path_list = gripper_pos_list = gripper_orn_list = None
-            elif len(elbow_pos_list) == 1:
-                grasp_joint_list = self.adjust_joint_values(grasp_joint_list)
-                (path_list,
-                elbow_path_list,
-                gripper_pos_list,
-                gripper_orn_list) = self.actor.motion_planning(grasp_joint_cfg=grasp_joint_list,
-                                                                start_joint=self.actor.init_joint_pose[:6],
-                                                                elbow_pos_list=elbow_pos_list,
-                                                                grasp_poses_list=grasp_poses_list,
-                                                                target_pointcloud=self.target_points_base)
-                print(f"grasp_joint_list: {grasp_joint_list}")
-            else:
-                (highest_joint_cfg_list,
-                highest_elbow_pos_list,
-                highest_grasp_poses_list) = self.actor.dbscan_grouping(elbow_pos_list,
-                                                                        grasp_joint_list,
-                                                                        grasp_score_list,
-                                                                        grasp_poses_list,
-                                                                        self.obs_points_base)
-                print(f"highest_joint_cfg_list: {highest_joint_cfg_list}")
-
-                for idx, joint_cfg in enumerate(highest_joint_cfg_list):
-                    highest_joint_cfg_list[idx] = self.adjust_joint_values(joint_cfg)
-
-
-                grasp_poses_list = highest_grasp_poses_list
-                (path_list, 
-                elbow_path_list, 
-                gripper_pos_list, 
-                gripper_orn_list) = self.actor.motion_planning(grasp_joint_cfg=highest_joint_cfg_list,
-                                                                start_joint=self.actor.init_joint_pose[:6],
-                                                                elbow_pos_list=highest_elbow_pos_list,
-                                                                grasp_poses_list=grasp_poses_list,
-                                                                target_pointcloud=self.target_points_base)
-            
-
-            gripper_mat_list = np.array(self.actor.pos_orn2matrix(gripper_pos_list, gripper_orn_list))
-            score_list = []
-
-            for gripper_mat_path in  gripper_mat_list:
-                score_list.append(self.path_quality_decision(gripper_mat_path))
-            sorted_indices = np.argsort(score_list)
-            score_list.sort()
-            score_list.sort(reverse=True)
-            print(f"score_list: {score_list}")
-
-            path_list = np.array(path_list)[sorted_indices]
-            
-            exe_path_list = np.asarray(path_list[0])
-            print(f"exe_path_list: {exe_path_list}")
-            reverse_path_list = np.flip(exe_path_list, axis=0)
-            # Moving along the path in joint space
-            self.move_along_path_vel(exe_path_list)
-
-
-            # Moving forward in cartesian space
-            ef_pose = self.get_ef_pose()
-            forward_mat = np.eye(4)
-            forward_mat[2, 3] = 0.05
-            ef_pose = ef_pose.dot(forward_mat)
-            quat_pose = pack_pose(ef_pose)
-            RT_grasp = [quat_pose[:3], ros_quat(quat_pose[3:])]
-        
-            self.set_pose(RT_grasp[0], RT_grasp[1])
-
-            # Close gripper
-            self.control_gripper("set_pose", 0.)
-            time.sleep(1)
-
-            # Go back to home position
-            self.move_along_path_vel(reverse_path_list[:30])
-            
-            # self.move_along_path([self.home_joint_point])
-            self.move_along_path([self.place_joint_point])
-            time.sleep(0.5)
-            # Open gripper
-            self.control_gripper("set_pose", 0.085)
-            time.sleep(0.5)
-
-            retreat_path = np.linspace(self.place_joint_point[:6], self.home_joint_point[:6], num=5)
-            print(f"retreat_path: {retreat_path}")
-            
-            self.move_along_path_vel(retreat_path)
-            # self.move_along_path([self.home_joint_point])
-            print(f"finish grasping")
-        
-        elif msg.data == 1:
-            # Pybullet setup
-            self.actor.init_joint_pose = self.joint_states
-            self.actor.env._panda.reset(self.actor.init_joint_pose)
-            if self.actor.sim_furniture_id is not None:
-                self.actor.remove_sim_fureniture()
-                self.actor.sim_furniture_id = None
-            self.actor.replace_real_furniture()
-            
-
-            # Reset the gripper
-            self.control_gripper("reset")
-            time.sleep(1)
-            self.control_gripper("set_pose", 0.)
-            time.sleep(1)
-            self.control_gripper("set_pose", 0.085)
-            print(f"finish grasping")
-
-
-            # Reset the arm's position
-            self.move_along_path([self.home_joint_point])
-            time.sleep(1)
-            # preset_path = [[-0.1045372703283405, -0.576734232246587, 1.5737202113556945, 0.031900739615946805, 1.6365758730876359, 0.11640376686875875],
-            #                [0.5550416533244285, -0.3928794775730634, 1.5781743482788522, -0.139025173155353, 1.6365855936256146, 0.11641346243960232],
-            #                [0.5547865890710261, -0.17408155268417816, 1.5933722096716072, -0.4246386056786398, 1.636478934023957, 0.11665586835544839],
-            #                [0.5662767310151456, -0.0032597910976694265, 1.6183618486023112, -0.810143057823974, 1.0120194568835776, 0.3339396613289475],
-            #                [0.5963862305624998, 0.4135828918873394, 1.4569587070511325, -0.9186928380653313, 0.4095706066785396, 0.6347956713841676],
-            #                [0.47400099556304465, 0.8366527625258681, 1.1346312603127713, -1.5057343692578793, -0.06861083191019726, 0.34546851897741415]]
-            preset_path = [[-0.1045372703283405, -0.576734232246587, 1.5737202113556945, 0.031900739615946805, 1.6365758730876359, 0.11640376686875875],
-                           [0.1153223708892492, -0.5154493146887465, 1.5752049239960803, -0.0257418988984868, 1.6365791139336287, 0.1164069980590066],
-                           [0.3351820121800661, -0.45416439713090605, 1.576689636636466, -0.08338453741292741, 1.6365823547796214, 0.11641022924925444],
-                           [0.5550416533244285, -0.3928794775730634, 1.5781743482788522, -0.139025173155353, 1.6365855936256146, 0.11641346243960232],
-                           [0.5549569658236277, -0.3190135023134347, 1.5839069687391038, -0.23489698482911527, 1.636550386091062, 0.1164949317442337],
-                           [0.5548722783238274, -0.24514752705380593, 1.5896395891993555, -0.3307687965028776, 1.6365151785565096, 0.11657640074515307],
-                           [0.5547865890710261, -0.17408155268417816, 1.5933722096716072, -0.4246386056786398, 1.636478934023957, 0.11665586835544839],
-                           [0.5584466363850659, -0.11713563282934257, 1.601032755315842, -0.5538067563930845, 1.4288257749776972, 0.18941779934661443],
-                           [0.5621066836991058, -0.061189712974507, 1.6086933009600768, -0.6829749071075291, 1.221172615931437, 0.2621797303377804],
-                           [0.5662767310151456, -0.0032597910976694265, 1.6183618486023112, -0.810143057823974, 1.0120194568835776, 0.3339396613289475],
-                           [0.576313231531597, 0.1376881038973332, 1.564560134085585, -0.8469936512370935, 0.9445365066485649, 0.4348916646800209],
-                           [0.5863497320480484, 0.2786359988923358, 1.5107584195688598, -0.883844244650213, 0.8770535564135521, 0.5358436680310943],
-                           [0.5963862305624998, 0.4135828918873394, 1.4569587070511325, -0.9186928380653313, 0.4095706066785396, 0.6347956713841676],
-                           [0.5222578182293487, 0.5546068487661823, 1.3494165588053455, -1.114387348193514, 0.25084331595277034, 0.5382432875819165],
-                           [0.4481294058961976, 0.6956308056450253, 1.2418744105595584, -1.3100818583216966, 0.0921150252263734, 0.4416909037796658],
-                           [0.47400099556304465, 0.8366527625258681, 1.1346312603127713, -1.5057343692578793, -0.06861083191019726, 0.34546851897741415]]
-
-            preset_path = np.array(preset_path)
-            reverse_path_list = np.flip(preset_path, axis=0)
-            
-            self.move_along_path_vel(preset_path)
-
-            # Moving forward in cartesian space
-            ef_pose = self.get_ef_pose()
-            forward_mat = np.eye(4)
-            forward_mat[2, 3] = 0.05
-            ef_pose = ef_pose.dot(forward_mat)
-            quat_pose = pack_pose(ef_pose)
-            RT_grasp = [quat_pose[:3], ros_quat(quat_pose[3:])]
-        
-            self.set_pose(RT_grasp[0], RT_grasp[1])
-
-            # Close gripper
-            self.control_gripper("set_pose", 0.)
-            time.sleep(1)
-
-            self.move_along_path_vel(reverse_path_list)
-            self.move_along_path([self.place_joint_point])
-            # Open gripper
-            self.control_gripper("set_pose", 0.085)
-
-            retreat_path = np.linspace(self.place_joint_point[:6], self.home_joint_point[:6], num=5)
-            print(f"retreat_path: {retreat_path}")
-            self.move_along_path_vel(retreat_path)
+                retreat_path = np.linspace(self.place_joint_point[:6], self.home_joint_point[:6], num=8)
+                print(f"retreat_path: {retreat_path}")
+                self.move_along_path_vel(retreat_path)
+                time.sleep(15)
         elif msg.data == 2:
-            mid_pre_pose = [-0.04427468277672825, -0.6814518568373747, 1.9326330998851284, -0.5862851934429655, 1.6095619654123625, -0.03971593771819025]
-            left_pre_pose = [0.7805084664780083, -0.3447851185521862, 1.6545243804122793, -0.6483704026715468, 1.3133215131318723, 0.19550596792932265]
-            right_pre_pose = [-0.6924878632366086, -0.14833294613231515, 1.618368107030873, -0.8783369593819518, 1.9726486931602232, -0.22076475257769282]
+            # Directly joint Position set testing
+            print(f"Enter preset path part")
+            preset_path = [[-0.030949352364245817, -1.2832006285708581, 1.5177811784488526, 0.0606198176669007, 1.6131496428748628, -0.04860742116607019],
+                           [-0.04447997504607053, -0.40536497597460014, 1.517843363260306, 0.061057432946081625, 1.1995356918713103, 0.1853151822810527],
+                           [-0.030949352364245817, -1.2832006285708581, 1.5177811784488526, 0.0606198176669007, 1.6131496428748628, -0.04860742116607019]]
             
+            self.move_along_path_dir(preset_path)
+            
+            # Moving forward in cartesian space
+            ef_pose = self.get_ef_pose()
+            forward_mat = np.eye(4)
+            forward_mat[2, 3] = 0.32
+            ef_pose = ef_pose.dot(forward_mat)
+            quat_pose = pack_pose(ef_pose)
+            forward_pose = np.array([*quat_pose[:3], *quat2euler(quat_pose[3:])]) # This pose is a 1d array(x, y, z and euler)
+            self.dir_set_position(forward_pose, mode="cart")
+
+                
+        elif msg.data == 4:
+            # Voxel visualization
             # Pybullet setup
             self.actor.init_joint_pose = self.joint_states
             self.actor.env._panda.reset(self.actor.init_joint_pose)
@@ -320,32 +191,116 @@ class ros_node(object):
             self.move_along_path([self.home_joint_point])
             time.sleep(1)
 
-
             # Set init_value to None
             self.target_points = None
             self.obs_points = None
-            
-            
 
             # Segmentation part
             seg_msg = Int32()
             seg_msg.data = 2
-            self.seg_pub.publish(seg_msg)    
-            time.sleep(5) # Sleep to wait for the segmentation pointcloud arrive
+            self.seg_pub.publish(seg_msg)
+            while(self.target_points is None):
+                print(f"wait for segmentation")
+                time.sleep(0.1) # Sleep to wait for the segmentation pointcloud arrive
             
-            
-            self.target_points = self.remove_outlier_points(self.target_points)
             self.visual_pc(self.target_points)
-            grasp_poses_camera = self.setting_contact_req(obstacle_points=self.obs_points, target_points=self.target_points)
+            # self.visual_pc(self.obs_points)
+            # self.target_points = self.remove_outlier_points(self.target_points)
+            
+            # Seperate the pointcloud of objects and assign the first for grasping task
+            object_pc_list = self.seperate_object_pointcloud(self.target_points)
+            # for object_pc in object_pc_list:
+            #     self.visual_pc(object_pc)
+            print(f"object_pc_list: {len(object_pc_list)}")
+            self.target_points = object_pc_list[0]
+            object_pc_list = object_pc_list[1:]
+            self.visual_pc(self.target_points)
 
+            # convert frame from camera to world(base)
             self.obs_points_base = self.pc_cam2base(self.obs_points)
             self.target_points_base = self.pc_cam2base(self.target_points)
+            object_pc_list = [self.pc_cam2base(i) for i in object_pc_list]
 
-            
             self.add_plane_2_obs_pc()
             # self.visual_pc(self.obs_points_base)
+            self.obs_points_base = self.actor.remove_reduntant_points(self.obs_points_base)
+            self.actor.sim_furniture_id = self.actor.create_obstacle_from_pc(self.obs_points_base, self.target_points_base)
+            time.sleep(10)
+            self.actor.remove_sim_fureniture()
+            self.actor.sim_furniture_id = self.actor.create_obstacle_from_pc(self.obs_points_base, self.target_points_base, voxel=True)
+
+        elif msg.data == 5:
+            # Main operation
+            # Pybullet setup
+            self.actor.init_joint_pose = self.joint_states
+            self.actor.env._panda.reset(self.actor.init_joint_pose)
+            if self.actor.sim_furniture_id is not None:
+                self.actor.remove_sim_fureniture()
+                self.actor.sim_furniture_id = None
+            self.actor.replace_real_furniture()
+
+            # Set middle waypoint
+            middle_point_l = [0.6044797768523323, -0.4638172672916634, 1.9192456554014092, -0.7220135978730173, 1.4285132171318873, 0.16713466369119284]
+            middle_point_r = [-0.44463801335875336, -0.34688159225181014, 1.955122030552248, -0.8672056118156931, 1.5888701358488284, -0.077308387296449]
+            middle_point_m = [0.0757963692651781, -0.6608915874316905, 1.9553211018437315, -0.5384243936496882, 1.5888411073929465, -0.07726960501307473]
+
+            # Reset the gripper
+            self.control_gripper("reset")
+            time.sleep(1)
+            self.control_gripper("set_pose", 0.)
+            time.sleep(1)
+            self.control_gripper("set_pose", 0.085)
+            print(f"finish grasping")
+
+
+            # Reset the arm's position
+            self.move_along_path([self.home_joint_point])
+            time.sleep(1)
+
+            # Set init_value to None
+            self.target_points = None
+            self.obs_points = None
+
+            # # Segmentation part
+            seg_msg = Int32()
+            seg_msg.data = 2
+            self.seg_pub.publish(seg_msg)
+            while(self.target_points is None):
+                time.sleep(0.05) # Sleep to wait for the segmentation pointcloud arrive
+            print(f"finished segmentation")
+            self.visual_pc(self.target_points)
+
+            
+            # Seperate the pointcloud of objects and assign the first for grasping task
+            object_pc_list = self.seperate_object_pointcloud(self.target_points)
+            # for object_pc in object_pc_list:
+            #     self.visual_pc(object_pc)
+            print(f"object_pc_list: {len(object_pc_list)}")
+            # Choose one as target object
+            cur_target_idx = self.find_optimal_point_cloud_index([self.pc_cam2base(object_pc) for object_pc in object_pc_list])
+            self.target_points = object_pc_list.pop(cur_target_idx)
+
+            # Add other objects' points to obstacle pointcloud
+            for object_pc in object_pc_list:
+                down_pc = regularize_pc_point_count(object_pc, 256)
+                
+                self.obs_points = np.concatenate((self.obs_points, down_pc), axis=0)
+            
+            # # convert frame from camera to world(base)
+            self.obs_points_base = self.pc_cam2base(self.obs_points)
+            self.target_points_base = self.pc_cam2base(self.target_points)
+            _, self.target_points_base = self.collect_plane_points(self.target_points_base)
+            # object_pc_list = [self.pc_cam2base(i) for i in object_pc_list]
+            self.visual_pc(self.target_points_base)
+
+            self.add_plane_2_obs_pc()
+            # self.visual_pc(self.obs_points_base)
+
             self.actor.sim_furniture_id = self.actor.create_obstacle_from_pc(self.obs_points_base, self.target_points_base)
             
+
+            # Get grasp poses and filter out those facing negative x-axis
+            grasp_poses_camera = self.setting_contact_req(obstacle_points=self.obs_points, target_points=self.target_points)
             self.grasp_list = []
             self.score_list = []
             for grasp_pose_cam in grasp_poses_camera:
@@ -355,12 +310,12 @@ class ros_node(object):
                     self.grasp_list.append(grasp_world)
                     self.score_list.append(grasp_pose_cam.score)
 
-            
+            print(f"self.grasp_list: {self.grasp_list}")
+            print(f"self.score_list: {self.score_list}")
             self.actor.visualize_points_grasppose(self.obs_points_base, self.grasp_list)
 
-
+            # Retreat the grasp poses a little and convert them to joint space
             self.grasp_list = self.grasp2pre_grasp(self.grasp_list, drawback_dis=0.1) # Drawback a little
-            
             (grasp_joint_list, grasp_poses_list,
             elbow_pos_list, grasp_score_list) = self.actor.grasp_pose2grasp_joint(grasp_poses=self.grasp_list,
                                                                                 grasp_scores=self.score_list)
@@ -369,27 +324,32 @@ class ros_node(object):
             elbow_pos_list = np.array(elbow_pos_list)
             grasp_poses_list = np.array(grasp_poses_list)
 
-            self.actor.move_directly(mid_pre_pose)
+            if np.mean(self.target_points_base, axis=0)[1] > 0.1:
+                middle_point = middle_point_l
+            elif np.mean(self.target_points_base, axis=0)[1] < -0.1:
+                middle_point = middle_point_r
+            else:
+                middle_point = middle_point_m
 
+            # Motion planning part
             if len(elbow_pos_list) == 0:
                 print(f"There is no path")
                 path_list = grasp_poses_list = elbow_path_list = gripper_pos_list = gripper_orn_list = None
             elif len(elbow_pos_list) == 1:
                 grasp_joint_list = self.adjust_joint_values(grasp_joint_list)
                 (path_list,
-                elbow_path_list,
-                gripper_pos_list,
-                gripper_orn_list) = self.actor.motion_planning(grasp_joint_cfg=grasp_joint_list,
-                                                                start_joint=mid_pre_pose,
+                 elbow_path_list,
+                 gripper_pos_list,
+                 gripper_orn_list) = self.actor.motion_planning(grasp_joint_cfg=grasp_joint_list,
+                                                                start_joint=middle_point,
                                                                 elbow_pos_list=elbow_pos_list,
                                                                 grasp_poses_list=grasp_poses_list,
-                                                                waypoint_num=20,
                                                                 target_pointcloud=self.target_points_base)
                 print(f"grasp_joint_list: {grasp_joint_list}")
             else:
                 (highest_joint_cfg_list,
-                highest_elbow_pos_list,
-                highest_grasp_poses_list) = self.actor.dbscan_grouping(elbow_pos_list,
+                 highest_elbow_pos_list,
+                 highest_grasp_poses_list) = self.actor.dbscan_grouping(elbow_pos_list,
                                                                         grasp_joint_list,
                                                                         grasp_score_list,
                                                                         grasp_poses_list,
@@ -402,16 +362,18 @@ class ros_node(object):
 
                 grasp_poses_list = highest_grasp_poses_list
                 (path_list, 
-                elbow_path_list, 
-                gripper_pos_list, 
-                gripper_orn_list) = self.actor.motion_planning(grasp_joint_cfg=highest_joint_cfg_list,
-                                                                start_joint=mid_pre_pose,
+                 elbow_path_list, 
+                 gripper_pos_list, 
+                 gripper_orn_list) = self.actor.motion_planning(grasp_joint_cfg=highest_joint_cfg_list,
+                                                                start_joint=middle_point,
                                                                 elbow_pos_list=highest_elbow_pos_list,
                                                                 grasp_poses_list=grasp_poses_list,
-                                                                waypoint_num=20,
                                                                 target_pointcloud=self.target_points_base)
-            
 
+            # Pro-process of motion planning, select the execution one and remove redundent waypoints
+            if path_list is None:
+                print(f"no path")
+                return
             gripper_mat_list = np.array(self.actor.pos_orn2matrix(gripper_pos_list, gripper_orn_list))
             score_list = []
 
@@ -421,14 +383,28 @@ class ros_node(object):
             score_list.sort()
             score_list.sort(reverse=True)
             print(f"score_list: {score_list}")
+
             path_list = np.array(path_list)[sorted_indices]
+            if len(path_list) == 0:
+                print(f"no path")
+                return
             
+            first_waypoint_idx = 5
+            exe_gripper_pos_path = np.asarray(gripper_pos_list[0])
+            for idx, pos in enumerate(exe_gripper_pos_path):
+                if pos[0] > 0.3:
+                    first_waypoint_idx = idx
+                    break
+            exe_gripper_pos_path = exe_gripper_pos_path[first_waypoint_idx:]
 
-            pre_defined_path = np.linspace(self.home_joint_point, mid_pre_pose, num=6)
-
-            exe_path_list = np.concatenate((pre_defined_path[:-1], np.asarray(path_list[0])), axis=0)
-            print(f"exe_path_list:\n {exe_path_list}")
-            reverse_path_list = np.flip(exe_path_list, axis=0)
+            # Execution part
+            exe_path_list = np.asarray(path_list[0])[first_waypoint_idx:]
+            print(f"before adjust, exe_path_list: {len(exe_path_list)}")
+            exe_path_list = self.adjust_waypoint(exe_gripper_pos_path, exe_path_list)
+            print(f"after adjust, exe_path_list: {len(exe_path_list)}")
+            print(f"exe_path_list: {exe_path_list}")
+            exe_path_list = np.concatenate((np.linspace(self.home_joint_point, exe_path_list[0], num=5), exe_path_list), axis=0)
+            reverse_path_list = np.flip(exe_path_list, axis=0)[:-2]
             # Moving along the path in joint space
             self.move_along_path_vel(exe_path_list)
 
@@ -447,24 +423,23 @@ class ros_node(object):
             self.control_gripper("set_pose", 0.)
             time.sleep(1)
 
-            # Go back to home position
-            self.move_along_path_vel(reverse_path_list[:-5])
-            
-            # self.move_along_path([self.home_joint_point])
-            self.move_along_path([self.place_joint_point])
+            # Moving back to placing config            
+            self.move_along_path_vel(reverse_path_list)
+            place_path = np.linspace(reverse_path_list[-1], self.place_joint_point, num=8)
+            self.move_along_path(place_path)
+
             time.sleep(0.5)
             # Open gripper
             self.control_gripper("set_pose", 0.085)
             time.sleep(0.5)
 
-            retreat_path = np.linspace(self.place_joint_point[:6], self.home_joint_point[:6], num=5)
+            retreat_path = np.linspace(self.place_joint_point[:6], self.home_joint_point[:6], num=9)
             print(f"retreat_path: {retreat_path}")
             
             self.move_along_path_vel(retreat_path)
-            # self.move_along_path([self.home_joint_point])
             print(f"finish grasping")
-        elif msg.data == 3:
-            self.raw_point_flag = True
+        elif msg.data == 6:
+            # Main operation without ruckig
             # Pybullet setup
             self.actor.init_joint_pose = self.joint_states
             self.actor.env._panda.reset(self.actor.init_joint_pose)
@@ -472,7 +447,11 @@ class ros_node(object):
                 self.actor.remove_sim_fureniture()
                 self.actor.sim_furniture_id = None
             self.actor.replace_real_furniture()
-            
+
+            # Set middle waypoint
+            middle_point_l = [0.6044797768523323, -0.4638172672916634, 1.9192456554014092, -0.7220135978730173, 1.4285132171318873, 0.16713466369119284]
+            middle_point_r = [-0.44463801335875336, -0.34688159225181014, 1.955122030552248, -0.8672056118156931, 1.5888701358488284, -0.077308387296449]
+            middle_point_m = [0.0757963692651781, -0.6608915874316905, 1.9553211018437315, -0.5384243936496882, 1.5888411073929465, -0.07726960501307473]
 
             # Reset the gripper
             self.control_gripper("reset")
@@ -484,78 +463,53 @@ class ros_node(object):
 
 
             # Reset the arm's position
-            self.move_along_path([self.home_joint_point])
+            self.move_along_path_dir([self.home_joint_point])
             time.sleep(1)
 
             # Set init_value to None
             self.target_points = None
             self.obs_points = None
 
-            self.raw_point_flag = False
-            cloud_array_base = self.pc_cam2base(self.cloud_array[:, :3])
-            # Create an Open3D point cloud from the numpy array
-            o3d_cloud = o3d.geometry.PointCloud()
-            o3d_cloud.points = o3d.utility.Vector3dVector(cloud_array_base[:, :3])
-            min_bound = np.array([-1.5, -0.5, -0.1])  # Minimum x, y, z coordinates
-            max_bound = np.array([1.1, 0.5, 2])     # Maximum x, y, z coordinates
-            bounding_box = o3d.geometry.AxisAlignedBoundingBox(min_bound, max_bound)
-
-            # Crop the point cloud using the bounding box
-            cropped_cloud = o3d_cloud.crop(bounding_box)
-            self.first_pointcloud = cropped_cloud
-        elif msg.data == 4:
-            mid_pre_pose = [-0.04427468277672825, -0.6814518568373747, 1.9326330998851284, -0.5862851934429655, 1.6095619654123625, -0.03971593771819025]
-            left_pre_pose = [0.7805084664780083, -0.3447851185521862, 1.6545243804122793, -0.6483704026715468, 1.3133215131318723, 0.19550596792932265]
-            right_pre_pose = [-0.6924878632366086, -0.14833294613231515, 1.618368107030873, -0.8783369593819518, 1.9726486931602232, -0.22076475257769282]
-            
-            # Pybullet setup
-            self.actor.init_joint_pose = self.joint_states
-            self.actor.env._panda.reset(self.actor.init_joint_pose)
-            if self.actor.sim_furniture_id is not None:
-                self.actor.remove_sim_fureniture()
-                self.actor.sim_furniture_id = None
-            self.actor.replace_real_furniture()
-            
-
-            # Reset the gripper
-            self.control_gripper("reset")
-            time.sleep(1)
-            self.control_gripper("set_pose", 0.)
-            time.sleep(1)
-            self.control_gripper("set_pose", 0.085)
-            print(f"finish grasping")
-
-
-            # Reset the arm's position
-            self.move_along_path([self.home_joint_point])
-            time.sleep(1)
-
-
-            # Set init_value to None
-            self.target_points = None
-            self.obs_points = None
-            
-            
-
-            # Segmentation part
+            # # Segmentation part
             seg_msg = Int32()
             seg_msg.data = 2
-            self.seg_pub.publish(seg_msg)    
-            time.sleep(5) # Sleep to wait for the segmentation pointcloud arrive
-            
-            
-            self.target_points = self.remove_outlier_points(self.target_points)
+            self.seg_pub.publish(seg_msg)
+            while(self.target_points is None):
+                time.sleep(0.05) # Sleep to wait for the segmentation pointcloud arrive
+            print(f"finished segmentation")
             self.visual_pc(self.target_points)
-            grasp_poses_camera = self.setting_contact_req(obstacle_points=self.obs_points, target_points=self.target_points)
 
+            
+            # Seperate the pointcloud of objects and assign the first for grasping task
+            object_pc_list = self.seperate_object_pointcloud(self.target_points)
+            # for object_pc in object_pc_list:
+            #     self.visual_pc(object_pc)
+            print(f"object_pc_list: {len(object_pc_list)}")
+            # Choose one as target object
+            cur_target_idx = self.find_optimal_point_cloud_index([self.pc_cam2base(object_pc) for object_pc in object_pc_list])
+            self.target_points = object_pc_list.pop(cur_target_idx)
+
+            # Add other objects' points to obstacle pointcloud
+            for object_pc in object_pc_list:
+                down_pc = regularize_pc_point_count(object_pc, 256)
+                
+                self.obs_points = np.concatenate((self.obs_points, down_pc), axis=0)
+            
+            # # convert frame from camera to world(base)
             self.obs_points_base = self.pc_cam2base(self.obs_points)
             self.target_points_base = self.pc_cam2base(self.target_points)
+            _, self.target_points_base = self.collect_plane_points(self.target_points_base)
+            # object_pc_list = [self.pc_cam2base(i) for i in object_pc_list]
+            self.visual_pc(self.target_points_base)
 
-            
             self.add_plane_2_obs_pc()
             # self.visual_pc(self.obs_points_base)
+
             self.actor.sim_furniture_id = self.actor.create_obstacle_from_pc(self.obs_points_base, self.target_points_base)
             
+
+            # Get grasp poses and filter out those facing negative x-axis
+            grasp_poses_camera = self.setting_contact_req(obstacle_points=self.obs_points, target_points=self.target_points)
             self.grasp_list = []
             self.score_list = []
             for grasp_pose_cam in grasp_poses_camera:
@@ -565,12 +519,12 @@ class ros_node(object):
                     self.grasp_list.append(grasp_world)
                     self.score_list.append(grasp_pose_cam.score)
 
-            
+            print(f"self.grasp_list: {self.grasp_list}")
+            print(f"self.score_list: {self.score_list}")
             self.actor.visualize_points_grasppose(self.obs_points_base, self.grasp_list)
 
-
+            # Retreat the grasp poses a little and convert them to joint space
             self.grasp_list = self.grasp2pre_grasp(self.grasp_list, drawback_dis=0.1) # Drawback a little
-            
             (grasp_joint_list, grasp_poses_list,
             elbow_pos_list, grasp_score_list) = self.actor.grasp_pose2grasp_joint(grasp_poses=self.grasp_list,
                                                                                 grasp_scores=self.score_list)
@@ -579,27 +533,32 @@ class ros_node(object):
             elbow_pos_list = np.array(elbow_pos_list)
             grasp_poses_list = np.array(grasp_poses_list)
 
-            self.actor.move_directly(mid_pre_pose)
+            if np.mean(self.target_points_base, axis=0)[1] > 0.1:
+                middle_point = middle_point_l
+            elif np.mean(self.target_points_base, axis=0)[1] < -0.1:
+                middle_point = middle_point_r
+            else:
+                middle_point = middle_point_m
 
+            # Motion planning part
             if len(elbow_pos_list) == 0:
                 print(f"There is no path")
                 path_list = grasp_poses_list = elbow_path_list = gripper_pos_list = gripper_orn_list = None
             elif len(elbow_pos_list) == 1:
                 grasp_joint_list = self.adjust_joint_values(grasp_joint_list)
                 (path_list,
-                elbow_path_list,
-                gripper_pos_list,
-                gripper_orn_list) = self.actor.motion_planning(grasp_joint_cfg=grasp_joint_list,
-                                                                start_joint=mid_pre_pose,
+                 elbow_path_list,
+                 gripper_pos_list,
+                 gripper_orn_list) = self.actor.motion_planning(grasp_joint_cfg=grasp_joint_list,
+                                                                start_joint=middle_point,
                                                                 elbow_pos_list=elbow_pos_list,
                                                                 grasp_poses_list=grasp_poses_list,
-                                                                waypoint_num=20,
                                                                 target_pointcloud=self.target_points_base)
                 print(f"grasp_joint_list: {grasp_joint_list}")
             else:
                 (highest_joint_cfg_list,
-                highest_elbow_pos_list,
-                highest_grasp_poses_list) = self.actor.dbscan_grouping(elbow_pos_list,
+                 highest_elbow_pos_list,
+                 highest_grasp_poses_list) = self.actor.dbscan_grouping(elbow_pos_list,
                                                                         grasp_joint_list,
                                                                         grasp_score_list,
                                                                         grasp_poses_list,
@@ -612,16 +571,18 @@ class ros_node(object):
 
                 grasp_poses_list = highest_grasp_poses_list
                 (path_list, 
-                elbow_path_list, 
-                gripper_pos_list, 
-                gripper_orn_list) = self.actor.motion_planning(grasp_joint_cfg=highest_joint_cfg_list,
-                                                                start_joint=mid_pre_pose,
+                 elbow_path_list, 
+                 gripper_pos_list, 
+                 gripper_orn_list) = self.actor.motion_planning(grasp_joint_cfg=highest_joint_cfg_list,
+                                                                start_joint=middle_point,
                                                                 elbow_pos_list=highest_elbow_pos_list,
                                                                 grasp_poses_list=grasp_poses_list,
-                                                                waypoint_num=20,
                                                                 target_pointcloud=self.target_points_base)
-            
 
+            # Pro-process of motion planning, select the execution one and remove redundent waypoints
+            if path_list is None:
+                print(f"no path")
+                return
             gripper_mat_list = np.array(self.actor.pos_orn2matrix(gripper_pos_list, gripper_orn_list))
             score_list = []
 
@@ -631,7 +592,88 @@ class ros_node(object):
             score_list.sort()
             score_list.sort(reverse=True)
             print(f"score_list: {score_list}")
+
             path_list = np.array(path_list)[sorted_indices]
+            if len(path_list) == 0:
+                print(f"no path")
+                return
+            
+            first_waypoint_idx = 5
+            exe_gripper_pos_path = np.asarray(gripper_pos_list[0])
+            for idx, pos in enumerate(exe_gripper_pos_path):
+                if pos[0] > 0.3:
+                    first_waypoint_idx = idx
+                    break
+            exe_gripper_pos_path = exe_gripper_pos_path[first_waypoint_idx:]
+
+            # Execution part
+            exe_path_list = np.asarray(path_list[0])[first_waypoint_idx:]
+            print(f"before adjust, exe_path_list: {len(exe_path_list)}")
+            exe_path_list = self.adjust_waypoint(exe_gripper_pos_path, exe_path_list)
+            print(f"after adjust, exe_path_list: {len(exe_path_list)}")
+            print(f"exe_path_list: {exe_path_list}")
+            exe_path_list = np.concatenate((np.linspace(self.home_joint_point, exe_path_list[0], num=3), exe_path_list), axis=0)
+            reverse_path_list = np.flip(exe_path_list, axis=0)[:-2]
+            # Moving along the path in joint space
+            self.move_along_path_dir(exe_path_list)
+
+
+            # Moving forward in cartesian space
+            ef_pose = self.get_ef_pose()
+            forward_mat = np.eye(4)
+            forward_mat[2, 3] = 0.3
+            ef_pose = ef_pose.dot(forward_mat)
+            quat_pose = pack_pose(ef_pose)
+            forward_pose = np.array([*quat_pose[:3], *quat2euler(quat_pose[3:])]) # This pose is a 1d array(x, y, z and euler)
+            self.dir_set_position(forward_pose, mode="cart")
+            print(f"Start grasping")
+            # Close gripper
+            self.control_gripper("set_pose", 0.)
+            time.sleep(1)
+            print(f"Finished grasping")
+
+            # Moving back to placing config            
+            self.move_along_path_dir(reverse_path_list)
+            place_path = np.linspace(reverse_path_list[-1], self.place_joint_point, num=3)
+            self.move_along_path_dir(place_path)
+
+            time.sleep(0.5)
+            # Open gripper
+            self.control_gripper("set_pose", 0.085)
+            time.sleep(0.5)
+
+            retreat_path = np.linspace(self.place_joint_point[:6], self.home_joint_point[:6], num=3)
+            print(f"retreat_path: {retreat_path}")
+            
+            self.move_along_path_dir(retreat_path)
+            print(f"finish grasping")
+        elif msg.data == 7:
+            # Reset the gripper
+            self.control_gripper("reset")
+            time.sleep(5)
+            self.control_gripper("set_pose", 0.)
+            time.sleep(10)
+            self.control_gripper("set_pose", 0.085)
+            print(f"finish grasping")
+
+    def raw_points_callback(self, msg):
+        if(self.raw_point_flag):
+            raw_scene_points_base = self.pc_cam2base(self.pc2_tranfer(msg))
+            o3d_pc = o3d.geometry.PointCloud()
+            o3d_pc.points = o3d.utility.Vector3dVector(raw_scene_points_base)
+            min_bound = np.array([0.7, -0.5, 0.3])
+            max_bound = np.array([0.93, 0.5, 0.63])
+
+            # 创建立方体裁剪框
+            bbox = o3d.geometry.AxisAlignedBoundingBox(min_bound=min_bound, max_bound=max_bound)
+
+            print(f"{o3d_pc}")
+            o3d_pc = o3d_pc.crop(bbox)
+            print(f"{o3d_pc}")
+            self.raw_point_flag = False
+            self.target_points_base = regularize_pc_point_count(np.asarray(o3d_pc.points), 2048)
+            print(f"self.target_points_base: {type(self.target_points_base)}")
+            
 
 
     def points_callback(self, msg):
@@ -661,12 +703,12 @@ class ros_node(object):
         o3d_pc = o3d.geometry.PointCloud()
         o3d_pc.points = o3d.utility.Vector3dVector(pc)
         o3d_pc.transform(T)
-        self.bounds = [[-0.05, 1.2], [-0.5, 0.5], [-0.12, 2]]  # set the bounds
+        self.bounds = [[-0.05, 1.05], [-0.5, 0.5], [-0.12, 2]]  # set the bounds
         bounding_box_points = list(itertools.product(*self.bounds))  # create limit points
         self.bounding_box = o3d.geometry.AxisAlignedBoundingBox.create_from_points(
             o3d.utility.Vector3dVector(bounding_box_points))  # create bounding box object
         if crop:
-            o3d_pc.crop(self.bounding_box)
+            o3d_pc = o3d_pc.crop(self.bounding_box)
         return np.asarray(o3d_pc.points)
 
 
@@ -874,6 +916,27 @@ class ros_node(object):
                    np.array([transform.orientation.x, transform.orientation.y, transform.orientation.z, transform.orientation.w])
     
 
+    def dir_set_position(self, position, mode="joint"):
+        """
+        Send goal joint value to tm_driver directly
+        """
+        srv = SetPositionsRequest()
+        
+        if mode == "joint":
+            srv.motion_type = 1
+            self.goal = np.concatenate((position, [0, 0, 0]))
+        else:
+            srv.motion_type = 2
+            self.goal = position
+        srv.positions = position
+        srv.velocity = 4
+        srv.acc_time = 1.2
+        srv.blend_percentage = 10
+        srv.fine_goal = False
+        self.position_serivce_client(srv)
+        
+        return self.dir_set_loop_confirm()
+
     def set_joint(self, joint_position):
         """
         Send goal joint value to ruckig to move
@@ -927,13 +990,13 @@ class ros_node(object):
             threshold=0.01
             while True:
                 dis = np.linalg.norm(self.joint_states-self.joint_goal)
-                # print(f"dis: {dis}")
+                print(f"dis: {dis}")
                 if last_state is None or np.linalg.norm(self.joint_states - last_state) > 0.001:
                     last_time = time.time()
 
                 if dis < threshold:
                     break
-                if time.time() - last_time > 0.3:
+                if time.time() - last_time > 0.15:
                     break
                 last_state = self.joint_states
             return True
@@ -961,6 +1024,23 @@ class ros_node(object):
                     break
             return True
 
+    def dir_set_loop_confirm(self):
+        # This loop_confirm only comfirm the joint part, cartesian will just sleep for a while
+        threshold=0.01
+        if len(self.goal) == 9:
+            while True:
+                dis = np.linalg.norm(self.joint_states-self.goal)
+                if dis < threshold:
+                    break
+        else:
+            time.sleep(2)
+        return True
+
+    def move_along_path_dir(self, path):
+        for waypoint in path:
+            self.dir_set_position(waypoint)
+            self.goal = None
+            print("finished one waypoint")
 
     def move_along_path(self, path):
         for waypoint in path:
@@ -1008,6 +1088,60 @@ class ros_node(object):
 
         self.robotiq_pub.publish(gripper_command)
     
+    def seperate_object_pointcloud(self, pc):
+        eps = 0.03  # Maximum distance between two samples for them to be considered as in the same neighborhood
+        min_samples = 20  # Minimum number of samples in a neighborhood for a point to be considered as a core point
+
+        # Apply DBSCAN
+        db = DBSCAN(eps=eps, min_samples=min_samples).fit(pc)
+        labels = db.labels_
+        clusters = [pc[labels == label] for label in set(labels) if label != -1]
+        return clusters
+    
+    def collect_plane_points(self, point_cloud):
+        # 使用布林遮罩，過濾出 z < 0.27 的點
+        mask = point_cloud[:, 2] < 0.28
+        return point_cloud[mask], point_cloud[~mask]
+        
+        
+    
+    def adjust_waypoint(self, gripper_pos_path, joint_path):
+        filtered_pos_waypoints = [gripper_pos_path[0]]  # 保留第一个点
+        filtered_joint_waypoints = [joint_path[0]]
+        for i in range(1, len(gripper_pos_path)-1):
+            if np.linalg.norm(gripper_pos_path[i] - filtered_pos_waypoints[-1]) >= 0.04:
+                filtered_pos_waypoints.append(gripper_pos_path[i])
+                filtered_joint_waypoints.append(joint_path[i])
+        filtered_pos_waypoints.append(gripper_pos_path[-1])
+        filtered_joint_waypoints.append(joint_path[-1])
+
+        print(f"filtered_joint_waypoints: {len(filtered_joint_waypoints)}")
+
+        adjusted_joint_path = [filtered_joint_waypoints[0]]
+        for idx in range(1, len(filtered_joint_waypoints)):
+            if np.linalg.norm(filtered_pos_waypoints[idx] - filtered_pos_waypoints[idx-1]) > 0.06:
+                adjusted_joint_path.append((filtered_joint_waypoints[idx] + filtered_joint_waypoints[idx-1])/2)
+            adjusted_joint_path.append(filtered_joint_waypoints[idx])
+        return np.array(adjusted_joint_path)
+
+
+    def find_optimal_point_cloud_index(self, point_clouds):
+        best_index = -1
+        min_y = 1
+        
+        for i, cloud in enumerate(point_clouds):
+            # 計算每個點雲的質心
+            x, y, _ = np.mean(cloud, axis=0)
+            
+            # 比較 x 值最小
+            if x < 0.73:
+                if y < min_y:
+                    min_y =  y
+                    best_index = i  # 儲存該點雲的索引
+                
+
+                
+        return best_index
 
 if __name__ == "__main__":
     rospy.init_node("test_realworld")

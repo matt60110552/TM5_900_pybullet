@@ -53,6 +53,7 @@ add_message_files(
   FILES
   GraspPose.msg
   motion_planning.msg
+  FeedbackState.msg
 )
 
 ## Generate services in the 'srv' folder
@@ -60,6 +61,7 @@ add_service_files(
   FILES
   GraspGroup.srv
   path_planning.srv
+  SetPositions.srv
 )
 
 ## Generate actions in the 'action' folder
