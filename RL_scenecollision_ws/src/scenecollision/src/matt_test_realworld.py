@@ -222,6 +222,7 @@ class ros_node(object):
             object_pc_list = [self.pc_cam2base(i) for i in object_pc_list]
 
             self.add_plane_2_obs_pc()
+            self.add_layer_plane_2_obs_pc()
             # self.visual_pc(self.obs_points_base)
             self.obs_points_base = self.actor.remove_reduntant_points(self.obs_points_base)
             self.actor.sim_furniture_id = self.actor.create_obstacle_from_pc(self.obs_points_base, self.target_points_base)
@@ -503,6 +504,7 @@ class ros_node(object):
             self.visual_pc(self.target_points_base)
 
             self.add_plane_2_obs_pc()
+            self.add_layer_plane_2_obs_pc()
             # self.visual_pc(self.obs_points_base)
 
             self.actor.sim_furniture_id = self.actor.create_obstacle_from_pc(self.obs_points_base, self.target_points_base)
@@ -772,6 +774,32 @@ class ros_node(object):
         
         self.obs_points_base = np.concatenate((self.obs_points_base, plane_pc), axis=0)
 
+    def add_layer_plane_2_obs_pc(self):
+        x_min, x_max = 0.64, 1.0
+        y_min, y_max = -0.5, 0.5
+        z = 0.66
+
+        # Define the number of points along x and y axes
+        num_points_x = 50
+        num_points_y = 50
+
+        # Generate grid of points on the x-y plane
+        x = np.linspace(x_min, x_max, num_points_x)
+        y = np.linspace(y_min, y_max, num_points_y)
+        x_grid, y_grid = np.meshgrid(x, y)
+
+        # Constant z-coordinate for the plane
+        z_points = np.full_like(x_grid, z)
+
+        # Flatten the grid into 1D arrays
+        x_points = x_grid.flatten()
+        y_points = y_grid.flatten()
+
+        # Combine x, y, and z coordinates to form the point cloud
+        plane_pc = np.column_stack((x_points, y_points, z_points.flatten()))
+        
+        self.obs_points_base = np.concatenate((self.obs_points_base, plane_pc), axis=0)
+
     def visual_pc(self, pc):
         o3d_pc = o3d.geometry.PointCloud()
         o3d_pc.points = o3d.utility.Vector3dVector(pc)
@@ -929,8 +957,8 @@ class ros_node(object):
             srv.motion_type = 2
             self.goal = position
         srv.positions = position
-        srv.velocity = 4
-        srv.acc_time = 1.2
+        srv.velocity = 4.5
+        srv.acc_time = 1.4
         srv.blend_percentage = 10
         srv.fine_goal = False
         self.position_serivce_client(srv)
@@ -1109,7 +1137,7 @@ class ros_node(object):
         filtered_pos_waypoints = [gripper_pos_path[0]]  # 保留第一个点
         filtered_joint_waypoints = [joint_path[0]]
         for i in range(1, len(gripper_pos_path)-1):
-            if np.linalg.norm(gripper_pos_path[i] - filtered_pos_waypoints[-1]) >= 0.04:
+            if np.linalg.norm(gripper_pos_path[i] - filtered_pos_waypoints[-1]) >= 0.05:
                 filtered_pos_waypoints.append(gripper_pos_path[i])
                 filtered_joint_waypoints.append(joint_path[i])
         filtered_pos_waypoints.append(gripper_pos_path[-1])
@@ -1119,7 +1147,7 @@ class ros_node(object):
 
         adjusted_joint_path = [filtered_joint_waypoints[0]]
         for idx in range(1, len(filtered_joint_waypoints)):
-            if np.linalg.norm(filtered_pos_waypoints[idx] - filtered_pos_waypoints[idx-1]) > 0.06:
+            if np.linalg.norm(filtered_pos_waypoints[idx] - filtered_pos_waypoints[idx-1]) > 0.07:
                 adjusted_joint_path.append((filtered_joint_waypoints[idx] + filtered_joint_waypoints[idx-1])/2)
             adjusted_joint_path.append(filtered_joint_waypoints[idx])
         return np.array(adjusted_joint_path)
@@ -1131,8 +1159,10 @@ class ros_node(object):
         
         for i, cloud in enumerate(point_clouds):
             # 計算每個點雲的質心
-            x, y, _ = np.mean(cloud, axis=0)
+            x, y, z = np.mean(cloud, axis=0)
             
+            if z < 0.27:
+                continue
             # 比較 x 值最小
             if x < 0.73:
                 if y < min_y:
